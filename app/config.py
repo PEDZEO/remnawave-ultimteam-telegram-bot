@@ -254,6 +254,14 @@ class Settings(BaseSettings):
     # Для обратной совместимости со старыми конфигами
     REFERRAL_CONTESTS_ENABLED: bool = False
 
+    # Маркетинг: подарки за тапы по логотипу в кабинете Ultima
+    TAP_REWARDS_ENABLED: bool = False
+    TAP_REWARDS_THRESHOLD: int = 100
+    TAP_REWARDS_REWARD_TYPE: str = 'subscription_days'  # subscription_days | balance
+    TAP_REWARDS_SUBSCRIPTION_DAYS: int = 1
+    TAP_REWARDS_BALANCE_KOPEKS: int = 5000
+    TAP_REWARDS_DAILY_REWARD_LIMIT: int = 1  # 0 = без дневного лимита
+
     BLACKLIST_CHECK_ENABLED: bool = False
     BLACKLIST_GITHUB_URL: str | None = None
     BLACKLIST_UPDATE_INTERVAL_HOURS: int = 24

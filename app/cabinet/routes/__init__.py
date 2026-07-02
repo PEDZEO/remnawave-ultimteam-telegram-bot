@@ -57,6 +57,7 @@ from .promocode import router as promocode_router
 from .referral import router as referral_router
 from .site_verification import router as site_verification_router
 from .subscription import router as subscription_router
+from .tap_rewards import router as tap_rewards_router
 from .ticket_notifications import (
     admin_router as admin_ticket_notifications_router,
     router as ticket_notifications_router,
@@ -78,6 +79,7 @@ router.include_router(auth_router)
 router.include_router(account_linking_router)
 router.include_router(oauth_router)
 router.include_router(subscription_router)
+router.include_router(tap_rewards_router)
 router.include_router(balance_router)
 router.include_router(referral_router)
 router.include_router(partner_application_router)

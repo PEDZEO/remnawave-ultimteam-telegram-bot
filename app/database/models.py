@@ -134,6 +134,7 @@ class TransactionType(Enum):
     REFUND = 'refund'
     REFERRAL_REWARD = 'referral_reward'
     POLL_REWARD = 'poll_reward'
+    TAP_REWARD = 'tap_reward'
 
 
 class PromoCodeType(Enum):
@@ -1772,6 +1773,12 @@ class User(Base):
     user_promo_groups = relationship('UserPromoGroup', back_populates='user', cascade='all, delete-orphan')
     poll_responses = relationship('PollResponse', back_populates='user')
     admin_roles_rel = relationship('UserRole', foreign_keys='[UserRole.user_id]', back_populates='user')
+    tap_reward_progress = relationship(
+        'TapRewardProgress',
+        back_populates='user',
+        cascade='all, delete-orphan',
+        uselist=False,
+    )
     notification_settings = Column(JSON, nullable=True, default=dict)
     last_pinned_message_id = Column(Integer, nullable=True)
 
@@ -1859,6 +1866,29 @@ class User(Base):
             self.balance_kopeks -= kopeks
             return True
         return False
+
+
+class TapRewardProgress(Base):
+    """Cumulative tap reward progress for one cabinet user."""
+
+    __tablename__ = 'tap_reward_progress'
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_tap_reward_progress_user_id'),
+        Index('ix_tap_reward_progress_user_id', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    total_taps = Column(Integer, nullable=False, default=0)
+    reward_count = Column(Integer, nullable=False, default=0)
+    daily_reward_count = Column(Integer, nullable=False, default=0)
+    daily_reward_date = Column(Date, nullable=True)
+    last_tap_at = Column(AwareDateTime(), nullable=True)
+    last_reward_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship('User', back_populates='tap_reward_progress')
 
 
 class Subscription(Base):
