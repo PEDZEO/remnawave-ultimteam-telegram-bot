@@ -39,7 +39,7 @@ class TapRewardResult:
 
 
 class TapRewardService:
-    max_taps_per_request = 10
+    max_taps_per_request = 25
 
     async def record_taps(self, db: AsyncSession, user: User, count: int) -> TapRewardResult:
         threshold = self._threshold()

@@ -15,7 +15,7 @@ router = APIRouter(prefix='/tap-rewards', tags=['Cabinet Tap Rewards'])
 
 
 class TapRewardRequest(BaseModel):
-    count: int = Field(default=1, ge=1, le=10)
+    count: int = Field(default=1, ge=1, le=25)
 
 
 class TapRewardResponse(BaseModel):
@@ -51,7 +51,7 @@ async def record_tap_reward(
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
-    is_limited = await RateLimitCache.is_rate_limited(user.id, 'tap_reward', limit=120, window=60)
+    is_limited = await RateLimitCache.is_rate_limited(user.id, 'tap_reward', limit=300, window=60)
     if is_limited:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
