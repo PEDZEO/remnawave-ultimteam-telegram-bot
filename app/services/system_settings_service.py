@@ -773,6 +773,13 @@ class BotConfigurationService:
             'warning': 'Дневной лимит защищает от бесконечной накрутки подарков.',
             'dependencies': 'TAP_REWARDS_ENABLED',
         },
+        'TAP_REWARDS_STREAK_TIMEOUT_SECONDS': {
+            'description': 'Через сколько секунд без нажатий сбрасывать текущий прогресс тапов до 0.',
+            'format': 'Целое число секунд. 0 отключает сброс по паузе.',
+            'example': '1',
+            'warning': 'Слишком маленькое значение может сбрасывать прогресс при медленном интернете.',
+            'dependencies': 'TAP_REWARDS_ENABLED',
+        },
         'CRYPTOBOT_ENABLED': {
             'description': 'Разрешает принимать криптоплатежи через CryptoBot.',
             'format': 'Булево значение.',

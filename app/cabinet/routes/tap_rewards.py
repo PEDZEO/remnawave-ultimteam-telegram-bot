@@ -24,6 +24,7 @@ class TapRewardResponse(BaseModel):
     progress_taps: int
     threshold: int
     taps_until_next: int
+    streak_timeout_seconds: int
     rewards_granted_total: int
     daily_reward_limit: int
     daily_rewards_granted: int

@@ -19,7 +19,9 @@ def _progress(**overrides):
     data = {
         'user_id': 1,
         'total_taps': 0,
+        'streak_taps': 0,
         'reward_count': 0,
+        'streak_reward_count': 0,
         'daily_reward_count': 0,
         'daily_reward_date': now.date(),
         'last_tap_at': None,
@@ -64,7 +66,7 @@ async def test_tap_reward_grants_balance_at_threshold(monkeypatch):
 
 async def test_tap_reward_daily_limit_keeps_unclaimed_progress(monkeypatch):
     service = tap_reward_module.TapRewardService()
-    progress = _progress(total_taps=3, reward_count=1, daily_reward_count=1)
+    progress = _progress(total_taps=3, streak_taps=3, reward_count=1, streak_reward_count=1, daily_reward_count=1)
     user = SimpleNamespace(id=1, balance_kopeks=0)
     db = _db()
 
@@ -92,7 +94,7 @@ async def test_tap_reward_daily_limit_keeps_unclaimed_progress(monkeypatch):
 
 async def test_tap_reward_does_not_grant_same_threshold_twice(monkeypatch):
     service = tap_reward_module.TapRewardService()
-    progress = _progress(total_taps=3, reward_count=1, daily_reward_count=0)
+    progress = _progress(total_taps=3, streak_taps=3, reward_count=1, streak_reward_count=1, daily_reward_count=0)
     user = SimpleNamespace(id=1, balance_kopeks=0)
     db = _db()
 
@@ -119,7 +121,7 @@ async def test_tap_reward_does_not_grant_same_threshold_twice(monkeypatch):
 
 async def test_tap_reward_continues_to_next_threshold(monkeypatch):
     service = tap_reward_module.TapRewardService()
-    progress = _progress(total_taps=3, reward_count=1, daily_reward_count=0)
+    progress = _progress(total_taps=3, streak_taps=3, reward_count=1, streak_reward_count=1, daily_reward_count=0)
     user = SimpleNamespace(id=1, balance_kopeks=0)
     db = _db()
 
@@ -154,7 +156,14 @@ async def test_tap_reward_continues_to_next_threshold(monkeypatch):
 async def test_tap_reward_daily_limit_grants_waiting_reward_next_day(monkeypatch):
     service = tap_reward_module.TapRewardService()
     yesterday = datetime.now(UTC).date() - timedelta(days=1)
-    progress = _progress(total_taps=6, reward_count=1, daily_reward_count=1, daily_reward_date=yesterday)
+    progress = _progress(
+        total_taps=6,
+        streak_taps=6,
+        reward_count=1,
+        streak_reward_count=1,
+        daily_reward_count=1,
+        daily_reward_date=yesterday,
+    )
     user = SimpleNamespace(id=1, balance_kopeks=0)
     db = _db()
 
@@ -180,6 +189,63 @@ async def test_tap_reward_daily_limit_grants_waiting_reward_next_day(monkeypatch
     assert progress.reward_count == 2
     assert progress.daily_reward_count == 1
     assert add_balance_mock.await_count == 1
+
+
+async def test_tap_reward_streak_timeout_resets_progress(monkeypatch):
+    service = tap_reward_module.TapRewardService()
+    old_tap_at = datetime.now(UTC) - timedelta(seconds=5)
+    progress = _progress(total_taps=50, streak_taps=50, last_tap_at=old_tap_at)
+    user = SimpleNamespace(id=1, balance_kopeks=0)
+    db = _db()
+
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_ENABLED', True)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_THRESHOLD', 100)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_REWARD_TYPE', 'balance')
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_STREAK_TIMEOUT_SECONDS', 1)
+    monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+
+    add_balance_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
+
+    result = await service.record_taps(db, user, 1)
+
+    assert result.reward_granted is False
+    assert result.total_taps == 51
+    assert result.progress_taps == 1
+    assert result.taps_until_next == 99
+    assert progress.streak_taps == 1
+    assert progress.streak_reward_count == 0
+    add_balance_mock.assert_not_awaited()
+
+
+async def test_tap_reward_streak_timeout_prevents_old_threshold_reward(monkeypatch):
+    service = tap_reward_module.TapRewardService()
+    old_tap_at = datetime.now(UTC) - timedelta(seconds=5)
+    progress = _progress(total_taps=100, streak_taps=100, reward_count=0, streak_reward_count=0, last_tap_at=old_tap_at)
+    user = SimpleNamespace(id=1, balance_kopeks=0)
+    db = _db()
+
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_ENABLED', True)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_THRESHOLD', 100)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_REWARD_TYPE', 'balance')
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
+    monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_STREAK_TIMEOUT_SECONDS', 1)
+    monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+
+    add_balance_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
+
+    result = await service.record_taps(db, user, 1)
+
+    assert result.reward_granted is False
+    assert result.total_taps == 101
+    assert result.progress_taps == 1
+    assert progress.streak_taps == 1
+    assert progress.reward_count == 0
+    add_balance_mock.assert_not_awaited()
 
 
 async def test_tap_reward_grants_subscription_days(monkeypatch):

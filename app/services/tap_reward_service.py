@@ -26,6 +26,7 @@ class TapRewardResult:
     progress_taps: int
     threshold: int
     taps_until_next: int
+    streak_timeout_seconds: int
     rewards_granted_total: int
     daily_reward_limit: int
     daily_rewards_granted: int
@@ -53,8 +54,10 @@ class TapRewardService:
 
         progress = await self._get_or_create_progress(db, user.id)
         self._reset_daily_counter_if_needed(progress, today=now.date())
+        self._reset_streak_if_needed(progress, now=now)
 
         progress.total_taps = max(0, int(progress.total_taps or 0)) + safe_count
+        progress.streak_taps = max(0, int(progress.streak_taps or 0)) + safe_count
         progress.last_tap_at = now
         progress.updated_at = now
 
@@ -103,7 +106,9 @@ class TapRewardService:
         if progress is None:
             return self._empty_result(enabled=True, threshold=threshold, daily_limit=daily_limit)
 
-        self._reset_daily_counter_if_needed(progress, today=datetime.now(UTC).date())
+        now = datetime.now(UTC)
+        self._reset_daily_counter_if_needed(progress, today=now.date())
+        self._reset_streak_if_needed(progress, now=now)
         await db.commit()
         await db.refresh(progress)
         return self._build_result(progress, threshold=threshold, daily_limit=daily_limit)
@@ -251,6 +256,10 @@ class TapRewardService:
         return max(0, int(settings.TAP_REWARDS_DAILY_REWARD_LIMIT or 0))
 
     @staticmethod
+    def _streak_timeout_seconds() -> int:
+        return max(0, int(settings.TAP_REWARDS_STREAK_TIMEOUT_SECONDS or 0))
+
+    @staticmethod
     def _reward_type() -> str:
         if settings.TAP_REWARDS_REWARD_TYPE == REWARD_TYPE_BALANCE:
             return REWARD_TYPE_BALANCE
@@ -263,11 +272,28 @@ class TapRewardService:
         progress.daily_reward_date = today
         progress.daily_reward_count = 0
 
+    @classmethod
+    def _reset_streak_if_needed(cls, progress: TapRewardProgress, *, now: datetime) -> None:
+        timeout_seconds = cls._streak_timeout_seconds()
+        if timeout_seconds <= 0 or progress.last_tap_at is None:
+            return
+
+        last_tap_at = progress.last_tap_at
+        if last_tap_at.tzinfo is None:
+            last_tap_at = last_tap_at.replace(tzinfo=UTC)
+
+        if (now - last_tap_at).total_seconds() <= timeout_seconds:
+            return
+
+        progress.streak_taps = 0
+        progress.streak_reward_count = 0
+        progress.updated_at = now
+
     @staticmethod
     def _has_unclaimed_reward(progress: TapRewardProgress, threshold: int) -> bool:
-        total_taps = max(0, int(progress.total_taps or 0))
-        reward_count = max(0, int(progress.reward_count or 0))
-        return total_taps // threshold > reward_count
+        streak_taps = max(0, int(progress.streak_taps or 0))
+        streak_reward_count = max(0, int(progress.streak_reward_count or 0))
+        return streak_taps // threshold > streak_reward_count
 
     @staticmethod
     def _daily_limit_reached(progress: TapRewardProgress, daily_limit: int) -> bool:
@@ -276,6 +302,7 @@ class TapRewardService:
     @staticmethod
     def _mark_reward_granted(progress: TapRewardProgress, *, now: datetime) -> None:
         progress.reward_count = max(0, int(progress.reward_count or 0)) + 1
+        progress.streak_reward_count = max(0, int(progress.streak_reward_count or 0)) + 1
         progress.daily_reward_count = max(0, int(progress.daily_reward_count or 0)) + 1
         progress.last_reward_at = now
         progress.updated_at = now
@@ -295,13 +322,15 @@ class TapRewardService:
         subscription_end_date: datetime | None = None,
     ) -> TapRewardResult:
         total_taps = max(0, int(progress.total_taps or 0))
+        streak_taps = max(0, int(progress.streak_taps or 0))
         reward_count = max(0, int(progress.reward_count or 0))
-        earned_rewards = total_taps // threshold
-        if earned_rewards > reward_count:
+        streak_reward_count = max(0, int(progress.streak_reward_count or 0))
+        earned_streak_rewards = streak_taps // threshold
+        if earned_streak_rewards > streak_reward_count:
             progress_taps = threshold
             taps_until_next = 0
         else:
-            raw_progress = total_taps - reward_count * threshold
+            raw_progress = streak_taps - streak_reward_count * threshold
             progress_taps = max(0, min(threshold, raw_progress))
             taps_until_next = max(0, threshold - progress_taps)
 
@@ -314,6 +343,7 @@ class TapRewardService:
             progress_taps=progress_taps,
             threshold=threshold,
             taps_until_next=taps_until_next,
+            streak_timeout_seconds=cls._streak_timeout_seconds(),
             rewards_granted_total=reward_count,
             daily_reward_limit=daily_limit,
             daily_rewards_granted=daily_rewards,
@@ -334,6 +364,7 @@ class TapRewardService:
             progress_taps=0,
             threshold=threshold,
             taps_until_next=threshold,
+            streak_timeout_seconds=TapRewardService._streak_timeout_seconds(),
             rewards_granted_total=0,
             daily_reward_limit=daily_limit,
             daily_rewards_granted=0,
