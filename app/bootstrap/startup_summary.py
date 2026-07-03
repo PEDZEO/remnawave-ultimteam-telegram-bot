@@ -4,6 +4,7 @@ from collections.abc import Callable
 from app.config import settings
 from app.services.payment_verification_service import auto_payment_verification_service
 from app.services.reporting_service import reporting_service
+from app.services.tap_reward_report_service import tap_reward_report_service
 from app.utils.startup_timeline import StartupTimeline
 
 
@@ -65,6 +66,7 @@ def log_startup_summary(
         f'Суточные подписки: {"Включен" if daily_subscription_task else "Отключен"}',
         f'Проверка версий: {"Включен" if version_check_task else "Отключен"}',
         f'Отчеты: {"Включен" if reporting_service.is_running() else "Отключен"}',
+        f'Отчеты по тапам: {"Включен" if tap_reward_report_service.is_running() else "Отключен"}',
     ]
     services_lines.append('Проверка пополнений: ' + ('Включена' if verification_providers else 'Отключена'))
     services_lines.append(

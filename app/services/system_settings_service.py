@@ -780,6 +780,30 @@ class BotConfigurationService:
             'warning': 'Слишком маленькое значение может сбрасывать прогресс при медленном интернете.',
             'dependencies': 'TAP_REWARDS_ENABLED',
         },
+        'TAP_REWARDS_ADMIN_NOTIFICATIONS_ENABLED': {
+            'description': 'Отправляет администратору уведомление каждый раз, когда пользователь получает подарок за тапы.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'dependencies': 'TAP_REWARDS_ENABLED, ADMIN_NOTIFICATIONS_ENABLED',
+        },
+        'TAP_REWARDS_DAILY_REPORT_ENABLED': {
+            'description': 'Отправляет ежедневный отчет по тапам: сколько было тапов, кто тапал и сколько подарков выдано.',
+            'format': 'Булево значение.',
+            'example': 'true',
+            'dependencies': 'TAP_REWARDS_ENABLED, ADMIN_REPORTS_CHAT_ID или ADMIN_NOTIFICATIONS_CHAT_ID',
+        },
+        'TAP_REWARDS_DAILY_REPORT_TIME': {
+            'description': 'Во сколько по МСК отправлять отчет по тапам за предыдущий день.',
+            'format': 'Время в формате HH:MM.',
+            'example': '23:59',
+            'dependencies': 'TAP_REWARDS_DAILY_REPORT_ENABLED',
+        },
+        'TAP_REWARDS_DAILY_REPORT_TOP_LIMIT': {
+            'description': 'Сколько пользователей показывать в ежедневном топе по количеству тапов.',
+            'format': 'Целое число от 1 и выше.',
+            'example': '10',
+            'dependencies': 'TAP_REWARDS_DAILY_REPORT_ENABLED',
+        },
         'CRYPTOBOT_ENABLED': {
             'description': 'Разрешает принимать криптоплатежи через CryptoBot.',
             'format': 'Булево значение.',

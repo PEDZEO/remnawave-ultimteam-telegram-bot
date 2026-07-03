@@ -262,6 +262,10 @@ class Settings(BaseSettings):
     TAP_REWARDS_BALANCE_KOPEKS: int = 5000
     TAP_REWARDS_DAILY_REWARD_LIMIT: int = 1  # 0 = без дневного лимита
     TAP_REWARDS_STREAK_TIMEOUT_SECONDS: int = 1  # 0 = не сбрасывать стрик по паузе
+    TAP_REWARDS_ADMIN_NOTIFICATIONS_ENABLED: bool = True
+    TAP_REWARDS_DAILY_REPORT_ENABLED: bool = True
+    TAP_REWARDS_DAILY_REPORT_TIME: str = '23:59'
+    TAP_REWARDS_DAILY_REPORT_TOP_LIMIT: int = 10
 
     BLACKLIST_CHECK_ENABLED: bool = False
     BLACKLIST_GITHUB_URL: str | None = None

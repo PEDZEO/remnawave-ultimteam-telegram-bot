@@ -32,6 +32,30 @@ def _progress(**overrides):
     return SimpleNamespace(**data)
 
 
+def _daily_stats(**overrides):
+    data = {
+        'user_id': 1,
+        'stat_date': datetime.now(UTC).date(),
+        'tap_count': 0,
+        'reward_count': 0,
+        'balance_reward_kopeks': 0,
+        'subscription_reward_days': 0,
+        'last_tap_at': None,
+        'last_reward_at': None,
+        'updated_at': None,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def _patch_daily_stats(monkeypatch, service, daily_stats=None):
+    daily_stats = daily_stats or _daily_stats()
+    notification_mock = AsyncMock()
+    monkeypatch.setattr(service, '_get_or_create_daily_stats', AsyncMock(return_value=daily_stats))
+    monkeypatch.setattr(service, '_send_reward_admin_notification', notification_mock)
+    return daily_stats, notification_mock
+
+
 async def test_tap_reward_grants_balance_at_threshold(monkeypatch):
     service = tap_reward_module.TapRewardService()
     progress = _progress()
@@ -44,6 +68,7 @@ async def test_tap_reward_grants_balance_at_threshold(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     async def add_balance(_db, target_user, amount, **_kwargs):
         target_user.balance_kopeks += amount
@@ -61,6 +86,10 @@ async def test_tap_reward_grants_balance_at_threshold(monkeypatch):
     assert progress.total_taps == 3
     assert progress.reward_count == 1
     assert progress.daily_reward_count == 1
+    assert daily_stats.tap_count == 3
+    assert daily_stats.reward_count == 1
+    assert daily_stats.balance_reward_kopeks == 5000
+    notification_mock.assert_awaited_once()
     add_balance_mock.assert_awaited_once()
 
 
@@ -76,6 +105,7 @@ async def test_tap_reward_daily_limit_keeps_unclaimed_progress(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     add_balance_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
@@ -88,6 +118,9 @@ async def test_tap_reward_daily_limit_keeps_unclaimed_progress(monkeypatch):
     assert progress.total_taps == 6
     assert progress.reward_count == 1
     assert progress.daily_reward_count == 1
+    assert daily_stats.tap_count == 3
+    assert daily_stats.reward_count == 0
+    notification_mock.assert_not_awaited()
     add_balance_mock.assert_not_awaited()
     db.commit.assert_awaited_once()
 
@@ -104,6 +137,7 @@ async def test_tap_reward_does_not_grant_same_threshold_twice(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     add_balance_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
@@ -116,6 +150,9 @@ async def test_tap_reward_does_not_grant_same_threshold_twice(monkeypatch):
     assert result.taps_until_next == 2
     assert progress.reward_count == 1
     assert progress.daily_reward_count == 0
+    assert daily_stats.tap_count == 1
+    assert daily_stats.reward_count == 0
+    notification_mock.assert_not_awaited()
     add_balance_mock.assert_not_awaited()
 
 
@@ -131,6 +168,7 @@ async def test_tap_reward_continues_to_next_threshold(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 0)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     async def add_balance(_db, target_user, amount, **_kwargs):
         target_user.balance_kopeks += amount
@@ -150,6 +188,10 @@ async def test_tap_reward_continues_to_next_threshold(monkeypatch):
     assert second_result.total_taps == 6
     assert second_result.rewards_granted_total == 2
     assert progress.reward_count == 2
+    assert daily_stats.tap_count == 3
+    assert daily_stats.reward_count == 1
+    assert daily_stats.balance_reward_kopeks == 5000
+    notification_mock.assert_awaited_once()
     assert add_balance_mock.await_count == 1
 
 
@@ -173,6 +215,7 @@ async def test_tap_reward_daily_limit_grants_waiting_reward_next_day(monkeypatch
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_BALANCE_KOPEKS', 5000)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     async def add_balance(_db, target_user, amount, **_kwargs):
         target_user.balance_kopeks += amount
@@ -188,6 +231,10 @@ async def test_tap_reward_daily_limit_grants_waiting_reward_next_day(monkeypatch
     assert result.rewards_granted_total == 2
     assert progress.reward_count == 2
     assert progress.daily_reward_count == 1
+    assert daily_stats.tap_count == 1
+    assert daily_stats.reward_count == 1
+    assert daily_stats.balance_reward_kopeks == 5000
+    notification_mock.assert_awaited_once()
     assert add_balance_mock.await_count == 1
 
 
@@ -205,6 +252,7 @@ async def test_tap_reward_streak_timeout_resets_progress(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_STREAK_TIMEOUT_SECONDS', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     add_balance_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
@@ -217,6 +265,9 @@ async def test_tap_reward_streak_timeout_resets_progress(monkeypatch):
     assert result.taps_until_next == 99
     assert progress.streak_taps == 1
     assert progress.streak_reward_count == 0
+    assert daily_stats.tap_count == 1
+    assert daily_stats.reward_count == 0
+    notification_mock.assert_not_awaited()
     add_balance_mock.assert_not_awaited()
 
 
@@ -234,6 +285,7 @@ async def test_tap_reward_streak_timeout_prevents_old_threshold_reward(monkeypat
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 1)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_STREAK_TIMEOUT_SECONDS', 1)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
 
     add_balance_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(tap_reward_module, 'add_user_balance', add_balance_mock)
@@ -245,6 +297,9 @@ async def test_tap_reward_streak_timeout_prevents_old_threshold_reward(monkeypat
     assert result.progress_taps == 1
     assert progress.streak_taps == 1
     assert progress.reward_count == 0
+    assert daily_stats.tap_count == 1
+    assert daily_stats.reward_count == 0
+    notification_mock.assert_not_awaited()
     add_balance_mock.assert_not_awaited()
 
 
@@ -262,6 +317,7 @@ async def test_tap_reward_grants_subscription_days(monkeypatch):
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_SUBSCRIPTION_DAYS', 1)
     monkeypatch.setattr(tap_reward_module.settings, 'TAP_REWARDS_DAILY_REWARD_LIMIT', 0)
     monkeypatch.setattr(service, '_get_or_create_progress', AsyncMock(return_value=progress))
+    daily_stats, notification_mock = _patch_daily_stats(monkeypatch, service)
     monkeypatch.setattr(tap_reward_module, 'get_subscription_by_user_id', AsyncMock(return_value=subscription))
 
     async def extend_subscription(_db, target_subscription, days, **_kwargs):
@@ -285,6 +341,10 @@ async def test_tap_reward_grants_subscription_days(monkeypatch):
     assert result.subscription_end_date == end_date + timedelta(days=1)
     assert progress.total_taps == 2
     assert progress.reward_count == 1
+    assert daily_stats.tap_count == 2
+    assert daily_stats.reward_count == 1
+    assert daily_stats.subscription_reward_days == 1
+    notification_mock.assert_awaited_once()
     extend_mock.assert_awaited_once()
     update_mock.assert_awaited_once()
     db.commit.assert_awaited_once()

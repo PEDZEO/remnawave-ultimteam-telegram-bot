@@ -18,6 +18,7 @@ from app.services.payment_verification_service import auto_payment_verification_
 from app.services.referral_contest_service import referral_contest_service
 from app.services.remnawave_sync_service import remnawave_sync_service
 from app.services.reporting_service import reporting_service
+from app.services.tap_reward_report_service import tap_reward_report_service
 from app.services.traffic_monitoring_service import traffic_monitoring_scheduler
 
 
@@ -139,6 +140,11 @@ async def shutdown_runtime_services(
                 'ℹ️ Остановка сервиса отчетов...',
                 'Ошибка остановки сервиса отчетов',
                 reporting_service.stop,
+            ),
+            (
+                'Остановка отчетов по тапам...',
+                'Ошибка остановки отчетов по тапам',
+                tap_reward_report_service.stop,
             ),
             (
                 'ℹ️ Остановка сервиса конкурсов...',

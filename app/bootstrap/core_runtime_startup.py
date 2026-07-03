@@ -20,6 +20,7 @@ from app.bootstrap.reporting_startup import initialize_reporting_stage
 from app.bootstrap.runtime_mode import resolve_runtime_mode
 from app.bootstrap.servers_startup import sync_servers_stage
 from app.bootstrap.services_startup import connect_integration_services_stage, wire_core_services
+from app.bootstrap.tap_reward_reports_startup import initialize_tap_reward_reports_stage
 from app.bootstrap.tariffs_startup import sync_tariffs_stage
 from app.bootstrap.telegram_webhook_startup import configure_telegram_webhook_stage
 from app.bootstrap.types import LoggerLike, TelegramNotifierLike
@@ -93,6 +94,7 @@ async def _run_pre_runtime_bootstrap(
 
     await initialize_backup_stage(timeline, logger, bot)
     await initialize_reporting_stage(timeline, logger, bot)
+    await initialize_tap_reward_reports_stage(timeline, logger, bot)
     await initialize_referral_contests_stage(timeline, logger)
     await initialize_contest_rotation_stage(timeline, logger, bot)
     if settings.is_log_rotation_enabled():

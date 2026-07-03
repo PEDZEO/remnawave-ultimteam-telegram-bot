@@ -57,6 +57,7 @@ def test_log_startup_summary_uses_fallback_when_no_webhooks(monkeypatch) -> None
     timeline = _TimelineRecorder()
     monkeypatch.setattr(startup_summary, 'settings', _build_fake_settings())
     monkeypatch.setattr(startup_summary, 'reporting_service', SimpleNamespace(is_running=lambda: False))
+    monkeypatch.setattr(startup_summary, 'tap_reward_report_service', SimpleNamespace(is_running=lambda: False))
     monkeypatch.setattr(
         startup_summary,
         'auto_payment_verification_service',
@@ -95,6 +96,7 @@ def test_log_startup_summary_collects_enabled_webhooks_in_order(monkeypatch) -> 
         ),
     )
     monkeypatch.setattr(startup_summary, 'reporting_service', SimpleNamespace(is_running=lambda: True))
+    monkeypatch.setattr(startup_summary, 'tap_reward_report_service', SimpleNamespace(is_running=lambda: True))
     monkeypatch.setattr(
         startup_summary,
         'auto_payment_verification_service',

@@ -46,6 +46,7 @@ async def test_start_core_runtime_stage_propagates_runtime_mode_flags(monkeypatc
     monkeypatch.setattr(startup, 'connect_integration_services_stage', AsyncMock())
     monkeypatch.setattr(startup, 'initialize_backup_stage', AsyncMock())
     monkeypatch.setattr(startup, 'initialize_reporting_stage', AsyncMock())
+    monkeypatch.setattr(startup, 'initialize_tap_reward_reports_stage', AsyncMock())
     monkeypatch.setattr(startup, 'initialize_referral_contests_stage', AsyncMock())
     monkeypatch.setattr(startup, 'initialize_contest_rotation_stage', AsyncMock())
     monkeypatch.setattr(startup, 'initialize_log_rotation_stage', AsyncMock())
@@ -162,6 +163,9 @@ async def test_run_pre_runtime_bootstrap_preserves_sequence_and_bot_handoff(
     async def _initialize_reporting_stage(*_args, **_kwargs):
         call_order.append('reporting')
 
+    async def _initialize_tap_reward_reports_stage(*_args, **_kwargs):
+        call_order.append('tap_reward_reports')
+
     async def _initialize_referral_contests_stage(*_args, **_kwargs):
         call_order.append('referral_contests')
 
@@ -193,6 +197,11 @@ async def test_run_pre_runtime_bootstrap_preserves_sequence_and_bot_handoff(
     )
     monkeypatch.setattr(startup, 'initialize_backup_stage', AsyncMock(side_effect=_initialize_backup_stage))
     monkeypatch.setattr(startup, 'initialize_reporting_stage', AsyncMock(side_effect=_initialize_reporting_stage))
+    monkeypatch.setattr(
+        startup,
+        'initialize_tap_reward_reports_stage',
+        AsyncMock(side_effect=_initialize_tap_reward_reports_stage),
+    )
     monkeypatch.setattr(
         startup,
         'initialize_referral_contests_stage',
@@ -227,6 +236,7 @@ async def test_run_pre_runtime_bootstrap_preserves_sequence_and_bot_handoff(
         'connect_integrations',
         'backup',
         'reporting',
+        'tap_reward_reports',
         'referral_contests',
         'contest_rotation',
         'log_rotation',

@@ -1779,6 +1779,11 @@ class User(Base):
         cascade='all, delete-orphan',
         uselist=False,
     )
+    tap_reward_daily_stats = relationship(
+        'TapRewardDailyStats',
+        back_populates='user',
+        cascade='all, delete-orphan',
+    )
     notification_settings = Column(JSON, nullable=True, default=dict)
     last_pinned_message_id = Column(Integer, nullable=True)
 
@@ -1891,6 +1896,31 @@ class TapRewardProgress(Base):
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship('User', back_populates='tap_reward_progress')
+
+
+class TapRewardDailyStats(Base):
+    """Per-user daily tap reward activity for admin reports."""
+
+    __tablename__ = 'tap_reward_daily_stats'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'stat_date', name='uq_tap_reward_daily_stats_user_date'),
+        Index('ix_tap_reward_daily_stats_date', 'stat_date'),
+        Index('ix_tap_reward_daily_stats_user_id', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    stat_date = Column(Date, nullable=False)
+    tap_count = Column(Integer, nullable=False, default=0)
+    reward_count = Column(Integer, nullable=False, default=0)
+    balance_reward_kopeks = Column(Integer, nullable=False, default=0)
+    subscription_reward_days = Column(Integer, nullable=False, default=0)
+    last_tap_at = Column(AwareDateTime(), nullable=True)
+    last_reward_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship('User', back_populates='tap_reward_daily_stats')
 
 
 class Subscription(Base):
