@@ -10,9 +10,31 @@ from urllib.parse import urlparse
 
 import aiohttp
 import structlog
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 
 logger = structlog.get_logger(__name__)
+
+
+_HAPP_CRYPTO_V4_DEEP_LINK = 'happ://crypt4/'
+_HAPP_CRYPTO_V4_PUBLIC_KEY = b"""
+-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3UZ0M3L4K+WjM3vkbQnz
+ozHg/cRbEXvQ6i4A8RVN4OM3rK9kU01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60B
+hmaM76QQEE+EUlIOL9EpwKWGtTL5lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEB
+W72EmOOShHUm/b/3m+HPmqwc4ugKj5zWV5SyiT829aFA5DxSjmIIFBAms7DafmSq
+LFTYIQL5cShDY2u+/sqyAw9yZIOoqW2TFIgIHhLPWek/ocDU7zyOrlu1E0SmcQQb
+LFqHq02fsnH6IcqTv3N5Adb/CkZDDQ6HvQVBmqbKZKf7ZdXkqsc/Zw27xhG7OfXC
+tUmWsiL7zA+KoTd3avyOh93Q9ju4UQsHthL3Gs4vECYOCS9dsXXSHEY/1ngU/hjO
+WFF8QEE/rYV6nA4PTyUvo5RsctSQL/9DJX7XNh3zngvif8LsCN2MPvx6X+zLouBX
+zgBkQ9DFfZAGLWf9TR7KVjZC/3NsuUCDoAOcpmN8pENBbeB0puiKMMWSvll36+2M
+YR1Xs0MgT8Y9TwhE2+TnnTJOhzmHi/BxiUlY/w2E0s4ax9GHAmX0wyF4zeV7kDkc
+vHuEdc0d7vDmdw0oqCqWj0Xwq86HfORu6tm1A8uRATjb4SzjTKclKuoElVAVa5Jo
+oh/uZMozC65SmDw+N5p6Su8CAwEAAQ==
+-----END PUBLIC KEY-----
+"""
+_HAPP_CRYPTO_V4_PUBLIC_KEY_OBJ = serialization.load_pem_public_key(_HAPP_CRYPTO_V4_PUBLIC_KEY)
 
 
 class UserStatus(Enum):
@@ -27,6 +49,7 @@ class TrafficLimitStrategy(Enum):
     DAY = 'DAY'
     WEEK = 'WEEK'
     MONTH = 'MONTH'
+    MONTH_ROLLING = 'MONTH_ROLLING'
 
 
 @dataclass
@@ -164,6 +187,9 @@ class RemnaWaveNode:
     traffic_reset_day: int | None = None
     notify_percent: int | None = None
     consumption_multiplier: float = 1.0
+    node_consumption_multiplier: float = 1.0
+    note: str | None = None
+    proxy_url: str | None = None
     cpu_count: int | None = None
     cpu_model: str | None = None
     total_ram: str | None = None
@@ -229,6 +255,28 @@ class RemnaWaveAPIError(Exception):
         self.status_code = status_code
         self.response_data = response_data
         super().__init__(self.message)
+
+
+def _int_from_api_number(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _create_happ_crypto_link(content: str) -> str | None:
+    try:
+        encrypted = _HAPP_CRYPTO_V4_PUBLIC_KEY_OBJ.encrypt(
+            content.encode('utf-8'),
+            padding.PKCS1v15(),
+        )
+    except Exception as exc:
+        logger.debug('Could not create Happ crypto link locally', error=exc)
+        return None
+
+    return _HAPP_CRYPTO_V4_DEEP_LINK + base64.b64encode(encrypted).decode('ascii')
 
 
 class RemnaWaveAPI:
@@ -547,6 +595,16 @@ class RemnaWaveAPI:
                 return []
             raise
 
+    async def get_user_by_id(self, user_id: int) -> RemnaWaveUser | None:
+        try:
+            response = await self._make_request('GET', f'/api/users/by-id/{user_id}')
+            user = self._parse_user(response['response'])
+            return await self.enrich_user_with_happ_link(user)
+        except RemnaWaveAPIError as e:
+            if e.status_code == 404:
+                return None
+            raise
+
     async def get_user_by_username(self, username: str) -> RemnaWaveUser | None:
         try:
             response = await self._make_request('GET', f'/api/users/by-username/{username}')
@@ -757,7 +815,13 @@ class RemnaWaveAPI:
 
     async def remove_users_from_internal_squad(self, uuid: str) -> bool:
         """Удаляет всех пользователей из Internal Squad (bulk action)"""
-        response = await self._make_request('POST', f'/api/internal-squads/{uuid}/bulk-actions/remove-users')
+        endpoint = f'/api/internal-squads/{uuid}/bulk-actions/remove-users'
+        try:
+            response = await self._make_request('DELETE', endpoint, quiet_statuses=(404, 405))
+        except RemnaWaveAPIError as e:
+            if e.status_code not in (404, 405):
+                raise
+            response = await self._make_request('POST', endpoint)
         return response['response']['eventSent']
 
     async def reorder_internal_squads(self, items: list[dict[str, Any]]) -> list[RemnaWaveInternalSquad]:
@@ -837,7 +901,13 @@ class RemnaWaveAPI:
 
     async def remove_users_from_external_squad(self, uuid: str) -> bool:
         """Удаляет всех пользователей из External Squad (bulk action)"""
-        response = await self._make_request('POST', f'/api/external-squads/{uuid}/bulk-actions/remove-users')
+        endpoint = f'/api/external-squads/{uuid}/bulk-actions/remove-users'
+        try:
+            response = await self._make_request('DELETE', endpoint, quiet_statuses=(404, 405))
+        except RemnaWaveAPIError as e:
+            if e.status_code not in (404, 405):
+                raise
+            response = await self._make_request('POST', endpoint)
         return response['response']['eventSent']
 
     async def reorder_external_squads(self, items: list[dict[str, Any]]) -> list[RemnaWaveExternalSquad]:
@@ -885,12 +955,34 @@ class RemnaWaveAPI:
         response = await self._make_request('POST', f'/api/nodes/{uuid}/actions/disable')
         return self._parse_node(response['response'])
 
-    async def restart_node(self, uuid: str) -> bool:
-        response = await self._make_request('POST', f'/api/nodes/{uuid}/actions/restart')
+    async def restart_node(self, uuid: str, force_restart: bool = False) -> bool:
+        endpoint = f'/api/nodes/{uuid}/actions/restart'
+        try:
+            response = await self._make_request(
+                'POST',
+                endpoint,
+                {'forceRestart': force_restart},
+                quiet_statuses=(400, 405, 422),
+            )
+        except RemnaWaveAPIError as e:
+            if e.status_code not in (400, 405, 422):
+                raise
+            response = await self._make_request('POST', endpoint)
         return response['response']['eventSent']
 
-    async def restart_all_nodes(self) -> bool:
-        response = await self._make_request('POST', '/api/nodes/actions/restart-all')
+    async def restart_all_nodes(self, force_restart: bool = False) -> bool:
+        endpoint = '/api/nodes/actions/restart-all'
+        try:
+            response = await self._make_request(
+                'POST',
+                endpoint,
+                {'forceRestart': force_restart},
+                quiet_statuses=(400, 405, 422),
+            )
+        except RemnaWaveAPIError as e:
+            if e.status_code not in (400, 405, 422):
+                raise
+            response = await self._make_request('POST', endpoint)
         return response['response']['eventSent']
 
     async def get_subscription_info(self, short_uuid: str) -> SubscriptionInfo:
@@ -980,6 +1072,17 @@ class RemnaWaveAPI:
     async def get_bandwidth_stats_nodes(self, start_date: str, end_date: str) -> dict[str, Any]:
         params = {'start': start_date, 'end': end_date}
         response = await self._make_request('GET', '/api/bandwidth-stats/nodes', params=params)
+        return response['response']
+
+    async def get_bandwidth_stats_nodes_users(self, node_uuids: list[str]) -> dict[str, Any]:
+        if not node_uuids:
+            return {'categories': [], 'sparklineData': [], 'topUsers': []}
+
+        response = await self._make_request(
+            'POST',
+            '/api/bandwidth-stats/nodes/users',
+            {'nodesUuids': node_uuids},
+        )
         return response['response']
 
     async def get_bandwidth_stats_nodes_realtime(self) -> list[dict[str, Any]]:
@@ -1173,16 +1276,17 @@ class RemnaWaveAPI:
             return False
 
     async def encrypt_happ_crypto_link(self, link_to_encrypt: str) -> str | None:
-        try:
-            data = {'linkToEncrypt': link_to_encrypt}
-            response = await self._make_request('POST', '/api/system/tools/happ/encrypt', data)
-            return response.get('response', {}).get('encryptedLink')
-        except RemnaWaveAPIError as e:
-            logger.warning('Не удалось зашифровать happ ссылку', message=e.message)
+        if not link_to_encrypt:
             return None
-        except Exception as e:
-            logger.warning('Ошибка при шифровании happ ссылки', error=e)
-            return None
+        if link_to_encrypt.startswith(_HAPP_CRYPTO_V4_DEEP_LINK):
+            return link_to_encrypt
+
+        encrypted = _create_happ_crypto_link(link_to_encrypt)
+        if encrypted:
+            return encrypted
+
+        logger.warning('Could not create Happ crypto link locally')
+        return None
 
     async def enrich_user_with_happ_link(self, user: RemnaWaveUser) -> RemnaWaveUser:
         if not user.happ_crypto_link and user.subscription_url:
@@ -1197,8 +1301,8 @@ class RemnaWaveAPI:
             return None
 
         return UserTraffic(
-            used_traffic_bytes=int(traffic_data.get('usedTrafficBytes', 0)),
-            lifetime_used_traffic_bytes=int(traffic_data.get('lifetimeUsedTrafficBytes', 0)),
+            used_traffic_bytes=_int_from_api_number(traffic_data.get('usedTrafficBytes')),
+            lifetime_used_traffic_bytes=_int_from_api_number(traffic_data.get('lifetimeUsedTrafficBytes')),
             online_at=self._parse_optional_datetime(traffic_data.get('onlineAt')),
             first_connected_at=self._parse_optional_datetime(traffic_data.get('firstConnectedAt')),
             last_connected_node_uuid=traffic_data.get('lastConnectedNodeUuid'),
@@ -1233,7 +1337,7 @@ class RemnaWaveAPI:
             short_uuid=user_data['shortUuid'],
             username=user_data['username'],
             status=status,
-            traffic_limit_bytes=user_data.get('trafficLimitBytes', 0),
+            traffic_limit_bytes=_int_from_api_number(user_data.get('trafficLimitBytes')),
             traffic_limit_strategy=traffic_strategy,
             expire_at=datetime.fromisoformat(user_data['expireAt'].replace('Z', '+00:00')),
             telegram_id=user_data.get('telegramId'),
@@ -1313,8 +1417,12 @@ class RemnaWaveAPI:
             is_connected=node_data.get('isConnected', False),
             is_disabled=node_data.get('isDisabled', False),
             users_online=node_data.get('usersOnline'),
-            traffic_used_bytes=node_data.get('trafficUsedBytes'),
-            traffic_limit_bytes=node_data.get('trafficLimitBytes'),
+            traffic_used_bytes=_int_from_api_number(node_data.get('trafficUsedBytes'))
+            if node_data.get('trafficUsedBytes') is not None
+            else None,
+            traffic_limit_bytes=_int_from_api_number(node_data.get('trafficLimitBytes'))
+            if node_data.get('trafficLimitBytes') is not None
+            else None,
             port=node_data.get('port'),
             is_connecting=node_data.get('isConnecting', False),
             xray_version=node_data.get('xrayVersion'),
@@ -1329,6 +1437,9 @@ class RemnaWaveAPI:
             traffic_reset_day=node_data.get('trafficResetDay'),
             notify_percent=node_data.get('notifyPercent'),
             consumption_multiplier=node_data.get('consumptionMultiplier', 1.0),
+            node_consumption_multiplier=node_data.get('nodeConsumptionMultiplier', 1.0),
+            note=node_data.get('note'),
+            proxy_url=node_data.get('proxyUrl'),
             cpu_count=node_data.get('cpuCount'),
             cpu_model=node_data.get('cpuModel'),
             total_ram=node_data.get('totalRam'),

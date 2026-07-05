@@ -321,6 +321,24 @@ class RemnaWaveWebhookService:
                         user = await get_user_by_remnawave_uuid(db, nested_uuid)
 
         if not user:
+            panel_user_id = data.get('userId')
+            nested_user = data.get('user')
+            if panel_user_id is None and isinstance(nested_user, dict):
+                panel_user_id = nested_user.get('id') or nested_user.get('userId')
+            if panel_user_id is not None:
+                try:
+                    from app.services.remnawave_service import RemnaWaveService
+
+                    service = RemnaWaveService()
+                    if service.is_configured:
+                        async with service.get_api_client() as api:
+                            panel_user = await api.get_user_by_id(int(panel_user_id))
+                        if panel_user:
+                            user = await get_user_by_remnawave_uuid(db, panel_user.uuid)
+                except Exception as exc:
+                    logger.warning('Failed to resolve RemnaWave webhook user by panel userId', user_id=panel_user_id, error=exc)
+
+        if not user:
             return None, None
 
         subscription = await get_subscription_by_user_id(db, user.id)

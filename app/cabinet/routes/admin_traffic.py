@@ -411,6 +411,7 @@ async def _build_enrichment(db: AsyncSession, user_map: dict[str, User]) -> dict
     service = RemnaWaveService()
     devices_by_user: dict[int, int] = {}
     last_node_uuid_by_user: dict[int, str] = {}
+    panel_id_to_local_user_id: dict[int, int] = {}
     node_uuid_to_name: dict[str, str] = {}
 
     if service.is_configured:
@@ -447,6 +448,8 @@ async def _build_enrichment(db: AsyncSession, user_map: dict[str, User]) -> dict
                 uid = uuid_to_user_id.get(pu.uuid)
                 if uid is None:
                     continue
+                if pu.id is not None:
+                    panel_id_to_local_user_id[int(pu.id)] = uid
                 if pu.user_traffic and pu.user_traffic.last_connected_node_uuid:
                     last_node_uuid_by_user[uid] = pu.user_traffic.last_connected_node_uuid
 
@@ -456,6 +459,11 @@ async def _build_enrichment(db: AsyncSession, user_map: dict[str, User]) -> dict
                 for device in devices_data.get('devices', []):
                     user_uuid = device.get('userUuid', '')
                     uid = uuid_to_user_id.get(user_uuid)
+                    if uid is None and device.get('userId') is not None:
+                        try:
+                            uid = panel_id_to_local_user_id.get(int(float(device['userId'])))
+                        except (TypeError, ValueError):
+                            uid = None
                     if uid is not None:
                         devices_by_user[uid] = devices_by_user.get(uid, 0) + 1
             except Exception:
