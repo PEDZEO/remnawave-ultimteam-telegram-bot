@@ -249,3 +249,17 @@ class SyncSquadsResponse(BaseModel):
     failed_count: int
     skipped_count: int
     errors: list[str] = Field(default_factory=list)
+
+
+class TariffApplyLimitsResponse(BaseModel):
+    """Response after applying tariff limits to active subscriptions."""
+
+    tariff_id: int
+    tariff_name: str
+    total_subscriptions: int
+    updated_count: int
+    failed_count: int
+    skipped_count: int
+    tariff_traffic_limit_gb: int
+    tariff_device_limit: int
+    errors: list[str] = Field(default_factory=list)

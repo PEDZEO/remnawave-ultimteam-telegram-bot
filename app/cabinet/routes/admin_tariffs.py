@@ -1,6 +1,7 @@
 """Admin routes for managing tariffs in cabinet."""
 
 import asyncio
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,6 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.database.crud.subscription import get_subscription_total_with_purchased_traffic
 from app.database.crud.server_squad import get_all_server_squads
 from app.database.crud.tariff import (
     create_tariff,
@@ -29,6 +31,7 @@ from ..schemas.tariffs import (
     ServerInfo,
     ServerTrafficLimit,
     SyncSquadsResponse,
+    TariffApplyLimitsResponse,
     TariffCreateRequest,
     TariffDetailResponse,
     TariffListItem,
@@ -44,6 +47,32 @@ from ..schemas.tariffs import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/admin/tariffs', tags=['Cabinet Admin Tariffs'])
+
+_APPLY_LIMITS_CONCURRENCY = 5
+_APPLY_LIMITS_MAX_CONSECUTIVE_FAILURES = 10
+
+
+def _gb_to_bytes(gb: int | None) -> int:
+    if not gb:
+        return 0
+    return int(gb) * 1024 * 1024 * 1024
+
+
+def _resolve_tariff_apply_traffic_limit(tariff: Tariff, subscription: Subscription) -> int:
+    """Return the effective subscription traffic limit after applying tariff base traffic."""
+    return get_subscription_total_with_purchased_traffic(tariff.traffic_limit_gb, subscription)
+
+
+def _resolve_tariff_apply_device_limit(tariff: Tariff, subscription: Subscription) -> int:
+    """Apply the tariff base device limit without silently removing existing extra slots."""
+    tariff_limit = max(1, int(tariff.device_limit or 1))
+    current_limit = max(0, int(subscription.device_limit or 0))
+    target_limit = max(tariff_limit, current_limit)
+
+    if tariff.max_device_limit and target_limit > tariff.max_device_limit:
+        return tariff.max_device_limit
+
+    return target_limit
 
 
 async def _get_tariff_servers(
@@ -560,7 +589,7 @@ async def get_tariff_stats(
     trial_result = await db.execute(
         select(func.count(Subscription.id)).where(
             Subscription.tariff_id == tariff_id,
-            Subscription.is_trial == True,
+            Subscription.is_trial.is_(True),
         )
     )
     trial_count = trial_result.scalar() or 0
@@ -572,7 +601,7 @@ async def get_tariff_stats(
         .where(
             Subscription.tariff_id == tariff_id,
             Transaction.type == TransactionType.SUBSCRIPTION_PAYMENT.value,
-            Transaction.is_completed == True,
+            Transaction.is_completed.is_(True),
         )
     )
     revenue_kopeks = revenue_result.scalar() or 0
@@ -585,6 +614,202 @@ async def get_tariff_stats(
         trial_subscriptions=trial_count,
         revenue_kopeks=revenue_kopeks,
         revenue_rubles=revenue_kopeks / 100,
+    )
+
+
+@router.post('/{tariff_id}/apply-limits', response_model=TariffApplyLimitsResponse)
+async def apply_tariff_limits_to_active_subscriptions(
+    tariff_id: int,
+    admin: User = Depends(require_permission('tariffs:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Apply current tariff traffic/device limits to active linked subscriptions."""
+    tariff = await get_tariff_by_id(db, tariff_id)
+    if not tariff:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Tariff not found',
+        )
+
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(Subscription)
+        .join(User, Subscription.user_id == User.id)
+        .options(joinedload(Subscription.user), joinedload(Subscription.tariff))
+        .where(
+            and_(
+                Subscription.tariff_id == tariff_id,
+                Subscription.status.in_([SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value]),
+                Subscription.end_date > now,
+            )
+        )
+    )
+    subscriptions = list(result.unique().scalars().all())
+
+    if not subscriptions:
+        return TariffApplyLimitsResponse(
+            tariff_id=tariff_id,
+            tariff_name=tariff.name,
+            total_subscriptions=0,
+            updated_count=0,
+            failed_count=0,
+            skipped_count=0,
+            tariff_traffic_limit_gb=tariff.traffic_limit_gb,
+            tariff_device_limit=tariff.device_limit,
+        )
+
+    from app.external.remnawave_api import UserStatus as RemnaWaveUserStatus
+    from app.services.remnawave_service import RemnaWaveConfigurationError, RemnaWaveService
+    from app.services.subscription_service import get_traffic_reset_strategy
+    from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
+
+    service = RemnaWaveService()
+    if not service.is_configured:
+        return TariffApplyLimitsResponse(
+            tariff_id=tariff_id,
+            tariff_name=tariff.name,
+            total_subscriptions=len(subscriptions),
+            updated_count=0,
+            failed_count=len(subscriptions),
+            skipped_count=0,
+            tariff_traffic_limit_gb=tariff.traffic_limit_gb,
+            tariff_device_limit=tariff.device_limit,
+            errors=[service.configuration_error or 'RemnaWave API is not configured'],
+        )
+
+    updated_count = 0
+    failed_count = 0
+    skipped_count = 0
+    consecutive_failures = 0
+    aborted = False
+    errors: list[str] = []
+    successful_updates: dict[int, tuple[int, int, str | None, str | None]] = {}
+    traffic_strategy = get_traffic_reset_strategy(tariff)
+
+    try:
+        async with service.get_api_client() as api:
+            semaphore = asyncio.Semaphore(_APPLY_LIMITS_CONCURRENCY)
+
+            async def _apply_one(sub: Subscription) -> None:
+                nonlocal updated_count, failed_count, skipped_count, consecutive_failures, aborted
+
+                if aborted:
+                    skipped_count += 1
+                    return
+
+                remnawave_uuid = sub.user.remnawave_uuid if sub.user else None
+                if not remnawave_uuid:
+                    skipped_count += 1
+                    if len(errors) < 20:
+                        errors.append(f'user_id={sub.user_id}: RemnaWave UUID is missing')
+                    return
+
+                target_traffic_limit = _resolve_tariff_apply_traffic_limit(tariff, sub)
+                target_device_limit = _resolve_tariff_apply_device_limit(tariff, sub)
+                previous_device_limit = sub.device_limit
+                sub.device_limit = target_device_limit
+                hwid_limit = resolve_hwid_device_limit_for_payload(sub)
+                sub.device_limit = previous_device_limit
+
+                async with semaphore:
+                    if aborted:
+                        skipped_count += 1
+                        return
+
+                    try:
+                        updated_user = await api.update_user(
+                            uuid=remnawave_uuid,
+                            status=RemnaWaveUserStatus.ACTIVE,
+                            expire_at=sub.end_date,
+                            traffic_limit_bytes=_gb_to_bytes(target_traffic_limit),
+                            traffic_limit_strategy=traffic_strategy,
+                            hwid_device_limit=hwid_limit,
+                        )
+                        successful_updates[sub.id] = (
+                            target_traffic_limit,
+                            target_device_limit,
+                            updated_user.subscription_url,
+                            updated_user.happ_crypto_link,
+                        )
+                        updated_count += 1
+                        consecutive_failures = 0
+                    except Exception as e:
+                        failed_count += 1
+                        consecutive_failures += 1
+                        if len(errors) < 20:
+                            errors.append(f'user_id={sub.user_id}: {str(e)[:160]}')
+                        logger.warning(
+                            'Failed to apply tariff limits to RemnaWave user',
+                            admin_id=admin.id,
+                            tariff_id=tariff_id,
+                            subscription_id=sub.id,
+                            user_id=sub.user_id,
+                            remnawave_uuid=remnawave_uuid,
+                            error=str(e),
+                        )
+                        if consecutive_failures >= _APPLY_LIMITS_MAX_CONSECUTIVE_FAILURES:
+                            aborted = True
+                            if len(errors) < 20:
+                                errors.append(
+                                    f'Aborted after {_APPLY_LIMITS_MAX_CONSECUTIVE_FAILURES} consecutive failures'
+                                )
+
+            await asyncio.gather(*[_apply_one(sub) for sub in subscriptions])
+    except RemnaWaveConfigurationError as e:
+        logger.warning(
+            'Cannot apply tariff limits: RemnaWave API is not configured',
+            admin_id=admin.id,
+            tariff_id=tariff_id,
+            error=str(e),
+        )
+        return TariffApplyLimitsResponse(
+            tariff_id=tariff_id,
+            tariff_name=tariff.name,
+            total_subscriptions=len(subscriptions),
+            updated_count=0,
+            failed_count=len(subscriptions),
+            skipped_count=0,
+            tariff_traffic_limit_gb=tariff.traffic_limit_gb,
+            tariff_device_limit=tariff.device_limit,
+            errors=[str(e)],
+        )
+
+    for sub in subscriptions:
+        update_data = successful_updates.get(sub.id)
+        if not update_data:
+            continue
+
+        target_traffic_limit, target_device_limit, subscription_url, crypto_link = update_data
+        sub.traffic_limit_gb = target_traffic_limit
+        sub.device_limit = target_device_limit
+        sub.subscription_url = subscription_url
+        sub.subscription_crypto_link = crypto_link
+
+    await db.commit()
+
+    logger.info(
+        'Admin applied tariff limits to active subscriptions',
+        admin_id=admin.id,
+        tariff_id=tariff_id,
+        tariff_name=tariff.name,
+        total=len(subscriptions),
+        updated=updated_count,
+        failed=failed_count,
+        skipped=skipped_count,
+        tariff_traffic_limit_gb=tariff.traffic_limit_gb,
+        tariff_device_limit=tariff.device_limit,
+    )
+
+    return TariffApplyLimitsResponse(
+        tariff_id=tariff_id,
+        tariff_name=tariff.name,
+        total_subscriptions=len(subscriptions),
+        updated_count=updated_count,
+        failed_count=failed_count,
+        skipped_count=skipped_count,
+        tariff_traffic_limit_gb=tariff.traffic_limit_gb,
+        tariff_device_limit=tariff.device_limit,
+        errors=errors,
     )
 
 
