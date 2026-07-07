@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -31,6 +31,7 @@ from ..schemas.tariffs import (
     ServerInfo,
     ServerTrafficLimit,
     SyncSquadsResponse,
+    TariffApplyLimitsRequest,
     TariffApplyLimitsResponse,
     TariffCreateRequest,
     TariffDetailResponse,
@@ -73,6 +74,23 @@ def _resolve_tariff_apply_device_limit(tariff: Tariff, subscription: Subscriptio
         return tariff.max_device_limit
 
     return target_limit
+
+
+def _apply_tariff_limits_to_subscription(
+    subscription: Subscription,
+    *,
+    target_traffic_limit: int,
+    target_device_limit: int | None,
+    subscription_url: str | None,
+    crypto_link: str | None,
+    update_device_limit: bool,
+) -> None:
+    """Persist tariff limits, keeping purchased device slots unless explicitly requested."""
+    subscription.traffic_limit_gb = target_traffic_limit
+    if update_device_limit and target_device_limit is not None:
+        subscription.device_limit = target_device_limit
+    subscription.subscription_url = subscription_url
+    subscription.subscription_crypto_link = crypto_link
 
 
 async def _get_tariff_servers(
@@ -620,10 +638,14 @@ async def get_tariff_stats(
 @router.post('/{tariff_id}/apply-limits', response_model=TariffApplyLimitsResponse)
 async def apply_tariff_limits_to_active_subscriptions(
     tariff_id: int,
+    request: TariffApplyLimitsRequest | None = Body(default=None),
     admin: User = Depends(require_permission('tariffs:edit')),
     db: AsyncSession = Depends(get_cabinet_db),
 ):
-    """Apply current tariff traffic/device limits to active linked subscriptions."""
+    """Apply current tariff limits to active linked subscriptions."""
+    request = request or TariffApplyLimitsRequest()
+    update_device_limit = request.update_device_limit
+
     tariff = await get_tariff_by_id(db, tariff_id)
     if not tariff:
         raise HTTPException(
@@ -656,6 +678,7 @@ async def apply_tariff_limits_to_active_subscriptions(
             skipped_count=0,
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
+            device_limits_updated=update_device_limit,
         )
 
     from app.external.remnawave_api import UserStatus as RemnaWaveUserStatus
@@ -674,6 +697,7 @@ async def apply_tariff_limits_to_active_subscriptions(
             skipped_count=0,
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
+            device_limits_updated=update_device_limit,
             errors=[service.configuration_error or 'RemnaWave API is not configured'],
         )
 
@@ -683,7 +707,7 @@ async def apply_tariff_limits_to_active_subscriptions(
     consecutive_failures = 0
     aborted = False
     errors: list[str] = []
-    successful_updates: dict[int, tuple[int, int, str | None, str | None]] = {}
+    successful_updates: dict[int, tuple[int, int | None, str | None, str | None]] = {}
     traffic_strategy = get_traffic_reset_strategy(tariff)
 
     try:
@@ -705,11 +729,14 @@ async def apply_tariff_limits_to_active_subscriptions(
                     return
 
                 target_traffic_limit = _resolve_tariff_apply_traffic_limit(tariff, sub)
-                target_device_limit = _resolve_tariff_apply_device_limit(tariff, sub)
-                previous_device_limit = sub.device_limit
-                sub.device_limit = target_device_limit
-                hwid_limit = resolve_hwid_device_limit_for_payload(sub)
-                sub.device_limit = previous_device_limit
+                target_device_limit: int | None = None
+                hwid_limit: int | None = None
+                if update_device_limit:
+                    target_device_limit = _resolve_tariff_apply_device_limit(tariff, sub)
+                    previous_device_limit = sub.device_limit
+                    sub.device_limit = target_device_limit
+                    hwid_limit = resolve_hwid_device_limit_for_payload(sub)
+                    sub.device_limit = previous_device_limit
 
                 async with semaphore:
                     if aborted:
@@ -771,6 +798,7 @@ async def apply_tariff_limits_to_active_subscriptions(
             skipped_count=0,
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
+            device_limits_updated=update_device_limit,
             errors=[str(e)],
         )
 
@@ -780,10 +808,14 @@ async def apply_tariff_limits_to_active_subscriptions(
             continue
 
         target_traffic_limit, target_device_limit, subscription_url, crypto_link = update_data
-        sub.traffic_limit_gb = target_traffic_limit
-        sub.device_limit = target_device_limit
-        sub.subscription_url = subscription_url
-        sub.subscription_crypto_link = crypto_link
+        _apply_tariff_limits_to_subscription(
+            sub,
+            target_traffic_limit=target_traffic_limit,
+            target_device_limit=target_device_limit,
+            subscription_url=subscription_url,
+            crypto_link=crypto_link,
+            update_device_limit=update_device_limit,
+        )
 
     await db.commit()
 
@@ -798,6 +830,7 @@ async def apply_tariff_limits_to_active_subscriptions(
         skipped=skipped_count,
         tariff_traffic_limit_gb=tariff.traffic_limit_gb,
         tariff_device_limit=tariff.device_limit,
+        device_limits_updated=update_device_limit,
     )
 
     return TariffApplyLimitsResponse(
@@ -809,6 +842,7 @@ async def apply_tariff_limits_to_active_subscriptions(
         skipped_count=skipped_count,
         tariff_traffic_limit_gb=tariff.traffic_limit_gb,
         tariff_device_limit=tariff.device_limit,
+        device_limits_updated=update_device_limit,
         errors=errors,
     )
 

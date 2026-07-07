@@ -251,6 +251,15 @@ class SyncSquadsResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class TariffApplyLimitsRequest(BaseModel):
+    """Request to apply tariff limits to active subscriptions."""
+
+    update_device_limit: bool = Field(
+        default=False,
+        description='Also apply tariff device limit to subscriptions and RemnaWave HWID limit',
+    )
+
+
 class TariffApplyLimitsResponse(BaseModel):
     """Response after applying tariff limits to active subscriptions."""
 
@@ -262,4 +271,5 @@ class TariffApplyLimitsResponse(BaseModel):
     skipped_count: int
     tariff_traffic_limit_gb: int
     tariff_device_limit: int
+    device_limits_updated: bool = False
     errors: list[str] = Field(default_factory=list)
