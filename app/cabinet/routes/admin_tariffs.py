@@ -9,8 +9,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from app.database.crud.subscription import get_subscription_total_with_purchased_traffic
 from app.database.crud.server_squad import get_all_server_squads
+from app.database.crud.subscription import get_subscription_total_with_purchased_traffic
 from app.database.crud.tariff import (
     create_tariff,
     delete_tariff,
@@ -22,7 +22,15 @@ from app.database.crud.tariff import (
     set_tariff_promo_groups,
     update_tariff,
 )
-from app.database.models import PromoGroup, Subscription, SubscriptionStatus, Tariff, Transaction, TransactionType, User
+from app.database.models import (
+    PromoGroup,
+    Subscription,
+    SubscriptionStatus,
+    Tariff,
+    Transaction,
+    TransactionType,
+    User,
+)
 
 from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.tariffs import (

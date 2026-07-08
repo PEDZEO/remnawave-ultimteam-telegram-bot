@@ -538,8 +538,7 @@ class DailySubscriptionService:
                 # Обработка суточных списаний
                 now = datetime.now(UTC)
                 should_process_daily = self.is_daily_charges_enabled() and (
-                    last_daily_check_at is None
-                    or (now - last_daily_check_at).total_seconds() >= daily_interval_seconds
+                    last_daily_check_at is None or (now - last_daily_check_at).total_seconds() >= daily_interval_seconds
                 )
                 should_process_traffic = self.is_traffic_resets_enabled() and (
                     last_traffic_reset_check_at is None

@@ -630,9 +630,7 @@ class UserService:
                 next_referrer_id = user.referred_by_id
                 while next_referrer_id and next_referrer_id not in referrer_chain_ids:
                     referrer_chain_ids.add(next_referrer_id)
-                    parent_result = await db.execute(
-                        select(User.referred_by_id).where(User.id == next_referrer_id)
-                    )
+                    parent_result = await db.execute(select(User.referred_by_id).where(User.id == next_referrer_id))
                     next_referrer_id = parent_result.scalar_one_or_none()
 
                 cyclic_ids = [referral_id for referral_id in unique_ids if referral_id in referrer_chain_ids]

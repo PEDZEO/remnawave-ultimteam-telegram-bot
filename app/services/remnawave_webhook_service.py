@@ -336,7 +336,9 @@ class RemnaWaveWebhookService:
                         if panel_user:
                             user = await get_user_by_remnawave_uuid(db, panel_user.uuid)
                 except Exception as exc:
-                    logger.warning('Failed to resolve RemnaWave webhook user by panel userId', user_id=panel_user_id, error=exc)
+                    logger.warning(
+                        'Failed to resolve RemnaWave webhook user by panel userId', user_id=panel_user_id, error=exc
+                    )
 
         if not user:
             return None, None

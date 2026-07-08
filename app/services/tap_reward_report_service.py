@@ -188,7 +188,9 @@ class TapRewardReportService:
                     func.coalesce(func.sum(TapRewardDailyStats.subscription_reward_days), 0),
                 ).where(TapRewardDailyStats.stat_date == report_date)
             )
-            active_users, total_taps, total_rewards, balance_reward_kopeks, subscription_reward_days = totals_result.one()
+            active_users, total_taps, total_rewards, balance_reward_kopeks, subscription_reward_days = (
+                totals_result.one()
+            )
 
             top_result = await session.execute(
                 select(TapRewardDailyStats, User)

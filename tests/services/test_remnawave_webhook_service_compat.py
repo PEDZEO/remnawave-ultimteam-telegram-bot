@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import Any
 
 import pytest
@@ -34,7 +34,12 @@ async def test_resolve_user_by_panel_user_id(monkeypatch: pytest.MonkeyPatch) ->
         async def __aenter__(self) -> FakeRemnaWaveApi:
             return FakeRemnaWaveApi()
 
-        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> None:
             return None
 
     class FakeRemnaWaveService:
