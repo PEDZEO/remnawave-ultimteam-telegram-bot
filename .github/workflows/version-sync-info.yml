@@ -1,73 +1,41 @@
-name: Version Sync Info
+name: Project Version Info
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
 
 jobs:
-  compare-versions:
+  summarize-version:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Collect version data
-        id: versions
+      - name: Write summary
         shell: bash
         run: |
           set -euo pipefail
 
-          UPSTREAM_REPO="BEDOLAGA-DEV/remnawave-bedolaga-telegram-bot"
-          UPSTREAM_URL="https://github.com/${UPSTREAM_REPO}.git"
+          VERSION="$(python -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
+          SHA="${GITHUB_SHA}"
+          SHORT_SHA="$(git rev-parse --short "${SHA}")"
+          LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "none")"
 
-          OUR_VERSION="$(python -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])')"
-          OUR_SHA="${GITHUB_SHA}"
-
-          UPSTREAM_SHA="$(git ls-remote "${UPSTREAM_URL}" refs/heads/main | awk '{print $1}')"
-          if [ -z "${UPSTREAM_SHA}" ]; then
-            UPSTREAM_SHA="unavailable"
-          fi
-
-          UPSTREAM_MANIFEST_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/.release-please-manifest.json"
-          if curl -fsSL "${UPSTREAM_MANIFEST_URL}" -o /tmp/upstream-manifest.json; then
-            UPSTREAM_VERSION="$(python -c 'import json; print(json.load(open("/tmp/upstream-manifest.json"))["."])')"
-          else
-            UPSTREAM_VERSION="unavailable"
-          fi
-
-          if [ "${UPSTREAM_SHA}" = "unavailable" ]; then
-            SYNC_STATUS="unknown"
-          elif [ "${OUR_SHA}" = "${UPSTREAM_SHA}" ]; then
-            SYNC_STATUS="in-sync"
-          else
-            SYNC_STATUS="different"
-          fi
-
-          echo "our_version=${OUR_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "upstream_version=${UPSTREAM_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "our_sha=${OUR_SHA}" >> "$GITHUB_OUTPUT"
-          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
-          echo "sync_status=${SYNC_STATUS}" >> "$GITHUB_OUTPUT"
-
-      - name: Write summary
-        shell: bash
-        run: |
           {
-            echo "## Bot Version Comparison"
+            echo "## Project Version"
             echo ""
-            echo "| Source | Version | Main SHA |"
-            echo "|---|---|---|"
-            echo "| Fork (our repo) | \`${{ steps.versions.outputs.our_version }}\` | \`${{ steps.versions.outputs.our_sha }}\` |"
-            echo "| Developer (upstream) | \`${{ steps.versions.outputs.upstream_version }}\` | \`${{ steps.versions.outputs.upstream_sha }}\` |"
-            echo ""
-            echo "**Sync status:** \`${{ steps.versions.outputs.sync_status }}\`"
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Repository | \`${GITHUB_REPOSITORY}\` |"
+            echo "| Version | \`${VERSION}\` |"
+            echo "| Commit | \`${SHORT_SHA}\` |"
+            echo "| Latest tag | \`${LATEST_TAG}\` |"
+            echo "| Docker image | \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/ultimteam-vpn-bot\` |"
           } >> "$GITHUB_STEP_SUMMARY"

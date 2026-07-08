@@ -148,10 +148,10 @@ jobs:
 
             ```bash
             # Docker Hub
-            docker pull pedzeo/remnawave-bedolaga-telegram-bot:${{ github.ref_name }}
+            docker pull pedzeo/ultimteam-vpn-bot:${{ github.ref_name }}
 
             # GitHub Container Registry
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository_owner }}/ultimteam-vpn-bot:${{ github.ref_name }}
             ```
 
             ### Update

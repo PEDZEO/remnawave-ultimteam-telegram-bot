@@ -29,7 +29,7 @@ jobs:
         echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
         
         echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
-        IMAGE_REPO=$(echo "${GITHUB_REPOSITORY_OWNER}/remnawave-bedolaga-telegram-bot" | tr '[:upper:]' '[:lower:]')
+        IMAGE_REPO=$(echo "${GITHUB_REPOSITORY_OWNER}/ultimteam-vpn-bot" | tr '[:upper:]' '[:lower:]')
         echo "image_repo=$IMAGE_REPO" >> $GITHUB_OUTPUT
         
         # Определяем версию и теги
@@ -88,8 +88,8 @@ jobs:
           org.opencontainers.image.version=${{ steps.version.outputs.version }}
           org.opencontainers.image.created=${{ steps.version.outputs.build_date }}
           org.opencontainers.image.revision=${{ steps.version.outputs.short_sha }}
-          org.opencontainers.image.title=Bedolaga RemnaWave Bot
-          org.opencontainers.image.description=Telegram bot for RemnaWave VPN service
+          org.opencontainers.image.title=Ultimteam VPN Bot
+          org.opencontainers.image.description=Ultimteam VPN bot and cabinet backend for Remnawave
           org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
     - name: Build Summary
