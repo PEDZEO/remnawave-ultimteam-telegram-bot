@@ -258,6 +258,10 @@ class TariffApplyLimitsRequest(BaseModel):
         default=False,
         description='Also apply tariff device limit to subscriptions and RemnaWave HWID limit',
     )
+    reset_traffic_usage: bool = Field(
+        default=False,
+        description='Reset current used traffic in RemnaWave after applying the tariff traffic limit',
+    )
 
 
 class TariffApplyLimitsResponse(BaseModel):
@@ -272,4 +276,7 @@ class TariffApplyLimitsResponse(BaseModel):
     tariff_traffic_limit_gb: int
     tariff_device_limit: int
     device_limits_updated: bool = False
+    traffic_usage_reset: bool = False
+    traffic_reset_count: int = 0
+    traffic_reset_failed_count: int = 0
     errors: list[str] = Field(default_factory=list)

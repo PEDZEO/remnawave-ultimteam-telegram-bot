@@ -44,12 +44,16 @@ def test_apply_tariff_device_limit_respects_tariff_max_limit() -> None:
 
 
 def test_apply_limits_request_keeps_devices_by_default() -> None:
-    assert TariffApplyLimitsRequest().update_device_limit is False
+    request = TariffApplyLimitsRequest()
+
+    assert request.update_device_limit is False
+    assert request.reset_traffic_usage is False
 
 
 def test_apply_limits_persistence_keeps_device_limit_without_flag() -> None:
     subscription = SimpleNamespace(
         traffic_limit_gb=10,
+        traffic_used_gb=7.5,
         device_limit=4,
         subscription_url='old-url',
         subscription_crypto_link='old-crypto',
@@ -62,9 +66,11 @@ def test_apply_limits_persistence_keeps_device_limit_without_flag() -> None:
         subscription_url='new-url',
         crypto_link='new-crypto',
         update_device_limit=False,
+        reset_traffic_usage=False,
     )
 
     assert subscription.traffic_limit_gb == 35
+    assert subscription.traffic_used_gb == 7.5
     assert subscription.device_limit == 4
     assert subscription.subscription_url == 'new-url'
     assert subscription.subscription_crypto_link == 'new-crypto'
@@ -73,6 +79,7 @@ def test_apply_limits_persistence_keeps_device_limit_without_flag() -> None:
 def test_apply_limits_persistence_updates_device_limit_with_flag() -> None:
     subscription = SimpleNamespace(
         traffic_limit_gb=10,
+        traffic_used_gb=7.5,
         device_limit=4,
         subscription_url='old-url',
         subscription_crypto_link='old-crypto',
@@ -85,9 +92,37 @@ def test_apply_limits_persistence_updates_device_limit_with_flag() -> None:
         subscription_url='new-url',
         crypto_link='new-crypto',
         update_device_limit=True,
+        reset_traffic_usage=False,
     )
 
     assert subscription.traffic_limit_gb == 35
+    assert subscription.traffic_used_gb == 7.5
     assert subscription.device_limit == 2
+    assert subscription.subscription_url == 'new-url'
+    assert subscription.subscription_crypto_link == 'new-crypto'
+
+
+def test_apply_limits_persistence_resets_used_traffic_with_flag() -> None:
+    subscription = SimpleNamespace(
+        traffic_limit_gb=10,
+        traffic_used_gb=7.5,
+        device_limit=4,
+        subscription_url='old-url',
+        subscription_crypto_link='old-crypto',
+    )
+
+    _apply_tariff_limits_to_subscription(
+        subscription,
+        target_traffic_limit=35,
+        target_device_limit=None,
+        subscription_url='new-url',
+        crypto_link='new-crypto',
+        update_device_limit=False,
+        reset_traffic_usage=True,
+    )
+
+    assert subscription.traffic_limit_gb == 35
+    assert subscription.traffic_used_gb == 0.0
+    assert subscription.device_limit == 4
     assert subscription.subscription_url == 'new-url'
     assert subscription.subscription_crypto_link == 'new-crypto'

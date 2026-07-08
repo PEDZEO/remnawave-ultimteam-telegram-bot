@@ -84,9 +84,12 @@ def _apply_tariff_limits_to_subscription(
     subscription_url: str | None,
     crypto_link: str | None,
     update_device_limit: bool,
+    reset_traffic_usage: bool,
 ) -> None:
     """Persist tariff limits, keeping purchased device slots unless explicitly requested."""
     subscription.traffic_limit_gb = target_traffic_limit
+    if reset_traffic_usage:
+        subscription.traffic_used_gb = 0.0
     if update_device_limit and target_device_limit is not None:
         subscription.device_limit = target_device_limit
     subscription.subscription_url = subscription_url
@@ -645,6 +648,7 @@ async def apply_tariff_limits_to_active_subscriptions(
     """Apply current tariff limits to active linked subscriptions."""
     request = request or TariffApplyLimitsRequest()
     update_device_limit = request.update_device_limit
+    reset_traffic_usage = request.reset_traffic_usage
 
     tariff = await get_tariff_by_id(db, tariff_id)
     if not tariff:
@@ -679,6 +683,7 @@ async def apply_tariff_limits_to_active_subscriptions(
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
             device_limits_updated=update_device_limit,
+            traffic_usage_reset=reset_traffic_usage,
         )
 
     from app.external.remnawave_api import UserStatus as RemnaWaveUserStatus
@@ -698,16 +703,19 @@ async def apply_tariff_limits_to_active_subscriptions(
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
             device_limits_updated=update_device_limit,
+            traffic_usage_reset=reset_traffic_usage,
             errors=[service.configuration_error or 'RemnaWave API is not configured'],
         )
 
     updated_count = 0
     failed_count = 0
     skipped_count = 0
+    traffic_reset_count = 0
+    traffic_reset_failed_count = 0
     consecutive_failures = 0
     aborted = False
     errors: list[str] = []
-    successful_updates: dict[int, tuple[int, int | None, str | None, str | None]] = {}
+    successful_updates: dict[int, tuple[int, int | None, str | None, str | None, bool]] = {}
     traffic_strategy = get_traffic_reset_strategy(tariff)
 
     try:
@@ -715,7 +723,8 @@ async def apply_tariff_limits_to_active_subscriptions(
             semaphore = asyncio.Semaphore(_APPLY_LIMITS_CONCURRENCY)
 
             async def _apply_one(sub: Subscription) -> None:
-                nonlocal updated_count, failed_count, skipped_count, consecutive_failures, aborted
+                nonlocal aborted, consecutive_failures, failed_count, skipped_count
+                nonlocal traffic_reset_count, traffic_reset_failed_count, updated_count
 
                 if aborted:
                     skipped_count += 1
@@ -752,11 +761,33 @@ async def apply_tariff_limits_to_active_subscriptions(
                             traffic_limit_strategy=traffic_strategy,
                             hwid_device_limit=hwid_limit,
                         )
+                        traffic_was_reset = False
+                        if reset_traffic_usage:
+                            try:
+                                updated_user = await api.reset_user_traffic(remnawave_uuid)
+                                traffic_was_reset = True
+                                traffic_reset_count += 1
+                            except Exception as reset_error:
+                                traffic_reset_failed_count += 1
+                                if len(errors) < 20:
+                                    errors.append(
+                                        f'user_id={sub.user_id}: traffic reset failed: {str(reset_error)[:140]}'
+                                    )
+                                logger.warning(
+                                    'Failed to reset traffic after applying tariff limits',
+                                    admin_id=admin.id,
+                                    tariff_id=tariff_id,
+                                    subscription_id=sub.id,
+                                    user_id=sub.user_id,
+                                    remnawave_uuid=remnawave_uuid,
+                                    error=str(reset_error),
+                                )
                         successful_updates[sub.id] = (
                             target_traffic_limit,
                             target_device_limit,
                             updated_user.subscription_url,
                             updated_user.happ_crypto_link,
+                            traffic_was_reset,
                         )
                         updated_count += 1
                         consecutive_failures = 0
@@ -799,6 +830,9 @@ async def apply_tariff_limits_to_active_subscriptions(
             tariff_traffic_limit_gb=tariff.traffic_limit_gb,
             tariff_device_limit=tariff.device_limit,
             device_limits_updated=update_device_limit,
+            traffic_usage_reset=reset_traffic_usage,
+            traffic_reset_count=traffic_reset_count,
+            traffic_reset_failed_count=traffic_reset_failed_count,
             errors=[str(e)],
         )
 
@@ -807,7 +841,7 @@ async def apply_tariff_limits_to_active_subscriptions(
         if not update_data:
             continue
 
-        target_traffic_limit, target_device_limit, subscription_url, crypto_link = update_data
+        target_traffic_limit, target_device_limit, subscription_url, crypto_link, traffic_was_reset = update_data
         _apply_tariff_limits_to_subscription(
             sub,
             target_traffic_limit=target_traffic_limit,
@@ -815,6 +849,7 @@ async def apply_tariff_limits_to_active_subscriptions(
             subscription_url=subscription_url,
             crypto_link=crypto_link,
             update_device_limit=update_device_limit,
+            reset_traffic_usage=traffic_was_reset,
         )
 
     await db.commit()
@@ -831,6 +866,9 @@ async def apply_tariff_limits_to_active_subscriptions(
         tariff_traffic_limit_gb=tariff.traffic_limit_gb,
         tariff_device_limit=tariff.device_limit,
         device_limits_updated=update_device_limit,
+        traffic_usage_reset=reset_traffic_usage,
+        traffic_reset_count=traffic_reset_count,
+        traffic_reset_failed_count=traffic_reset_failed_count,
     )
 
     return TariffApplyLimitsResponse(
@@ -843,6 +881,9 @@ async def apply_tariff_limits_to_active_subscriptions(
         tariff_traffic_limit_gb=tariff.traffic_limit_gb,
         tariff_device_limit=tariff.device_limit,
         device_limits_updated=update_device_limit,
+        traffic_usage_reset=reset_traffic_usage,
+        traffic_reset_count=traffic_reset_count,
+        traffic_reset_failed_count=traffic_reset_failed_count,
         errors=errors,
     )
 
