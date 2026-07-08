@@ -46,14 +46,14 @@ ENV PYTHONPATH=/app \
 
 EXPOSE 8080
 
-LABEL org.opencontainers.image.title="Bedolaga RemnaWave Bot" \
-      org.opencontainers.image.description="Telegram bot for RemnaWave VPN service" \
+LABEL org.opencontainers.image.title="Remnawave Ultimteam Telegram Bot" \
+      org.opencontainers.image.description="Ultimteam VPN bot and cabinet backend for Remnawave" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.source="https://github.com/fr1ngg/remnawave-bedolaga-telegram-bot" \
-      org.opencontainers.image.url="https://github.com/fr1ngg/remnawave-bedolaga-telegram-bot" \
-      org.opencontainers.image.vendor="fr1ngg"
+      org.opencontainers.image.source="https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot" \
+      org.opencontainers.image.url="https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot" \
+      org.opencontainers.image.vendor="PEDZEO"
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1

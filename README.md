@@ -1,4 +1,4 @@
-# Ultimteam VPN Bot
+# Remnawave Ultimteam Telegram Bot
 
 Telegram-бот и backend-слой для VPN-сервиса на Remnawave с личным кабинетом PEDZEO.
 
@@ -9,7 +9,13 @@ Telegram-бот и backend-слой для VPN-сервиса на Remnawave с 
 
 **Кабинет:** [PEDZEO/cabinet-frontend](https://github.com/PEDZEO/cabinet-frontend)
 
-**Бот:** [PEDZEO/remnawave-bedolaga-telegram-bot](https://github.com/PEDZEO/remnawave-bedolaga-telegram-bot)
+**Бот:** [PEDZEO/remnawave-ultimteam-telegram-bot](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot)
+
+**Бэкапы панели:** [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram)
+
+<p align="center">
+  <img src="assets/ultimteam-product.png" width="390" alt="Ultimteam VPN cabinet product screen">
+</p>
 
 ---
 
@@ -39,6 +45,19 @@ CABINET_ULTIMA_ACCOUNT_LINKING_MODE=code
 ```
 
 `CABINET_ULTIMA_MODE_ENABLED`, `CABINET_ULTIMA_THEME_CONFIG` и кнопки Ultim-уведомлений настраиваются через кабинет/API и хранятся в системных настройках.
+
+<details>
+<summary><strong>Экосистема PEDZEO</strong></summary>
+
+| Компонент | Репозиторий |
+| --- | --- |
+| Backend и Telegram bot | [PEDZEO/remnawave-ultimteam-telegram-bot](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot) |
+| Личный кабинет | [PEDZEO/cabinet-frontend](https://github.com/PEDZEO/cabinet-frontend) |
+| Бэкапы панели Remnawave | [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram) |
+
+Автоустановка поддерживает установку backend-бота и кабинета одним сценарием. Точную команду запуска держите в installer-репозитории или внутренней инструкции окружения, чтобы не хранить устаревший `curl | bash` в README продукта.
+
+</details>
 
 <details>
 <summary><strong>Функции проекта</strong></summary>
@@ -80,8 +99,8 @@ CABINET_ULTIMA_ACCOUNT_LINKING_MODE=code
 <summary><strong>Быстрый старт</strong></summary>
 
 ```bash
-git clone https://github.com/PEDZEO/remnawave-bedolaga-telegram-bot.git
-cd remnawave-bedolaga-telegram-bot
+git clone https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot.git
+cd remnawave-ultimteam-telegram-bot
 
 cp .env.example .env
 nano .env

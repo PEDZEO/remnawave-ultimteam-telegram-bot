@@ -100,8 +100,8 @@
 
 1. **Форкните и клонируйте репозиторий:**
 ```bash
-git clone https://github.com/Fr1ngg/remnawave-bedolaga-telegram-bot.git
-cd remnawave-bedolaga-telegram-bot
+git clone https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot.git
+cd remnawave-ultimteam-telegram-bot
 ```
 
 2. **Установите зависимости через uv:**

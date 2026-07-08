@@ -40,11 +40,11 @@ CRASH_ERROR_MESSAGE_MAX_LENGTH: Final[int] = 1000
 CRASH_ERROR_PREVIEW_LENGTH: Final[int] = 200
 
 # URL-ы
-GITHUB_BOT_URL: Final[str] = 'https://github.com/PEDZEO/remnawave-bedolaga-telegram-bot'
+GITHUB_BOT_URL: Final[str] = 'https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot'
 GITHUB_CABINET_URL: Final[str] = 'https://github.com/PEDZEO/cabinet-frontend'
 COMMUNITY_URL: Final[str] = 'https://t.me/+wTdMtSWq8YdmZmVi'
 DEVELOPER_CONTACT_URL: Final[str] = 'https://t.me/pedzeo'
-FORK_SIGNATURE: Final[str] = 'Fork PEDZEO'
+FORK_SIGNATURE: Final[str] = 'PEDZEO Project'
 
 # Ключевые слова для определения типа ошибки
 WEBHOOK_ERROR_KEYWORDS: Final[tuple[str, ...]] = ('webhook', 'failed to resolve host')
