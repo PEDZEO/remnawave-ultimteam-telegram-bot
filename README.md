@@ -11,7 +11,7 @@ Telegram-бот и backend-слой для VPN-сервиса на Remnawave с 
 
 **Бот:** [PEDZEO/remnawave-ultimteam-telegram-bot](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot)
 
-**Бэкапы панели:** [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram)
+**Инсталлер и обслуживание:** [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram)
 
 <p align="center">
   <img src="assets/ultimteam-product.png" width="390" alt="Ultimteam VPN cabinet product screen">
@@ -53,9 +53,9 @@ CABINET_ULTIMA_ACCOUNT_LINKING_MODE=code
 | --- | --- |
 | Backend и Telegram bot | [PEDZEO/remnawave-ultimteam-telegram-bot](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot) |
 | Личный кабинет | [PEDZEO/cabinet-frontend](https://github.com/PEDZEO/cabinet-frontend) |
-| Бэкапы панели Remnawave | [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram) |
+| Инсталлер и обслуживание Remnawave | [PEDZEO/remnawave-panel-backup-telegram](https://github.com/PEDZEO/remnawave-panel-backup-telegram) |
 
-Автоустановка поддерживает установку backend-бота и кабинета одним сценарием. Точную команду запуска держите в installer-репозитории или внутренней инструкции окружения, чтобы не хранить устаревший `curl | bash` в README продукта.
+`remnawave-panel-backup-telegram` - полноценный набор для установки и обслуживания Remnawave-окружения: автоустановка, бэкапы, восстановление и Telegram-уведомления.
 
 </details>
 
