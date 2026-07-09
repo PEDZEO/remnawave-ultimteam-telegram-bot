@@ -135,6 +135,22 @@ async def generate_oauth_state(provider: str, payload: OAuthStatePayload | None 
     return state
 
 
+def _decode_oauth_state(stored_value: str) -> OAuthStatePayload:
+    try:
+        return json.loads(stored_value)
+    except json.JSONDecodeError:
+        return {'provider': stored_value}
+
+
+async def peek_oauth_state_any(state: str) -> OAuthStatePayload | None:
+    """Read state context without consuming the one-time token."""
+    key = cache_key('oauth_state', state)
+    stored_value: str | None = await cache.get(key)
+    if stored_value is None:
+        return None
+    return _decode_oauth_state(stored_value)
+
+
 async def consume_oauth_state_any(state: str) -> OAuthStatePayload | None:
     """Consume a CSRF state token and return raw payload without provider pre-validation."""
     key = cache_key('oauth_state', state)
@@ -142,11 +158,7 @@ async def consume_oauth_state_any(state: str) -> OAuthStatePayload | None:
     if stored_value is None:
         return None
     await cache.delete(key)
-    try:
-        payload: OAuthStatePayload = json.loads(stored_value)
-    except json.JSONDecodeError:
-        payload = {'provider': stored_value}
-    return payload
+    return _decode_oauth_state(stored_value)
 
 
 async def consume_oauth_state(state: str, provider: str) -> OAuthStatePayload | None:

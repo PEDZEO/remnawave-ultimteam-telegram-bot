@@ -23,6 +23,7 @@ from ..auth.oauth_providers import (
     consume_oauth_state,
     generate_oauth_state,
     get_provider,
+    peek_oauth_state_any,
 )
 from ..dependencies import get_cabinet_db
 from ..schemas.auth import AuthResponse
@@ -99,6 +100,15 @@ class OAuthAuthorizeResponse(BaseModel):
     state: str
 
 
+class OAuthStateContextRequest(BaseModel):
+    state: str = Field(..., min_length=1, max_length=128, description='CSRF state token')
+
+
+class OAuthStateContextResponse(BaseModel):
+    provider: str
+    intent: str
+
+
 class OAuthCallbackRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=2048, description='Authorization code from provider')
     state: str = Field(..., min_length=1, max_length=128, description='CSRF state token')
@@ -144,6 +154,27 @@ async def get_oauth_authorize_url(provider: str):
         authorize_url = oauth_provider.get_authorization_url(state)
 
     return OAuthAuthorizeResponse(authorize_url=authorize_url, state=state)
+
+
+@router.post('/state-context', response_model=OAuthStateContextResponse)
+async def get_oauth_state_context(request: OAuthStateContextRequest):
+    """Resolve a callback that returned in another browser without consuming its state."""
+    state_payload = await peek_oauth_state_any(request.state)
+    if not isinstance(state_payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid or expired OAuth state',
+        )
+
+    provider = state_payload.get('provider')
+    if not isinstance(provider, str) or not get_provider(provider):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='OAuth provider is not enabled',
+        )
+
+    intent = 'link' if state_payload.get('intent') == 'link' else 'login'
+    return OAuthStateContextResponse(provider=provider, intent=intent)
 
 
 @router.post('/{provider}/callback', response_model=AuthResponse)

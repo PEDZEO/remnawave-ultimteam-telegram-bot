@@ -12,6 +12,22 @@ from app.cabinet.auth import oauth_providers
 pytestmark = pytest.mark.asyncio
 
 
+async def test_peek_oauth_state_any_does_not_consume_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = 'state-peek'
+    cache_key = oauth_providers.cache_key('oauth_state', state)
+    cache = SimpleNamespace(
+        get=AsyncMock(return_value=json.dumps({'provider': 'yandex', 'intent': 'login'})),
+        delete=AsyncMock(),
+    )
+    monkeypatch.setattr(oauth_providers, 'cache', cache)
+
+    payload = await oauth_providers.peek_oauth_state_any(state)
+
+    assert payload == {'provider': 'yandex', 'intent': 'login'}
+    cache.get.assert_awaited_once_with(cache_key)
+    cache.delete.assert_not_awaited()
+
+
 async def test_consume_oauth_state_any_returns_json_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     state = 'state-123'
     cache_key = oauth_providers.cache_key('oauth_state', state)
