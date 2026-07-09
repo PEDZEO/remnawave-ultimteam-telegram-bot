@@ -17,6 +17,11 @@ class RuntimePreflightContext:
     telegram_notifier: TelegramNotifierLike
 
 
+def _validate_security_settings() -> None:
+    if settings.CABINET_ENABLED and not settings.CABINET_JWT_SECRET:
+        raise RuntimeError('CABINET_JWT_SECRET must be configured when CABINET_ENABLED=true')
+
+
 def _build_preflight_banner_metadata() -> list[tuple[str, str]]:
     return [
         ('Уровень логирования', settings.LOG_LEVEL),
@@ -31,6 +36,7 @@ def _build_preflight_runtime_objects() -> tuple[structlog.typing.FilteringBoundL
 
 
 async def prepare_runtime_preflight() -> RuntimePreflightContext:
+    _validate_security_settings()
     file_formatter, console_formatter, telegram_notifier = setup_logging()
     await configure_runtime_logging(file_formatter, console_formatter)
 

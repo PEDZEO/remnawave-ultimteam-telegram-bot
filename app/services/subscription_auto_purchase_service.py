@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.subscription import extend_subscription
-from app.database.crud.transaction import create_transaction
+from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import get_user_by_id, subtract_user_balance
 from app.database.models import Subscription, TransactionType, User
 from app.localization.texts import get_texts
@@ -1501,14 +1501,23 @@ async def _auto_add_traffic(
             user,
             price_kopeks,
             description,
-            create_transaction=True,
-            payment_method=PaymentMethod.BALANCE,
+            commit=False,
         )
         if not success:
+            await db.rollback()
             logger.warning(
                 '❌ Автопокупка трафика: не удалось списать баланс пользователя', format_user_id=_format_user_id(user)
             )
             return False
+        transaction = await create_transaction(
+            db=db,
+            user_id=user.id,
+            type=TransactionType.WITHDRAWAL,
+            amount_kopeks=price_kopeks,
+            description=description,
+            payment_method=PaymentMethod.BALANCE,
+            commit=False,
+        )
     except Exception as error:
         logger.error(
             '❌ Автопокупка трафика: ошибка списания баланса пользователя',
@@ -1516,14 +1525,13 @@ async def _auto_add_traffic(
             error=error,
             exc_info=True,
         )
+        await db.rollback()
         return False
 
     # Add traffic
     old_traffic_limit = subscription.traffic_limit_gb or 0
     try:
-        await add_subscription_traffic(db, subscription, traffic_gb)
-        await db.commit()
-        await db.refresh(subscription)
+        await add_subscription_traffic(db, subscription, traffic_gb, commit=False)
     except Exception as error:
         logger.error(
             '❌ Автопокупка трафика: ошибка добавления трафика пользователю',
@@ -1535,7 +1543,18 @@ async def _auto_add_traffic(
         return False
 
     # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
-    await reactivate_subscription(db, subscription)
+    await reactivate_subscription(db, subscription, commit=False)
+    await db.commit()
+    await emit_transaction_side_effects(
+        db,
+        transaction,
+        user_id=user.id,
+        type=TransactionType.WITHDRAWAL,
+        amount_kopeks=price_kopeks,
+        payment_method=PaymentMethod.BALANCE,
+        description=description,
+    )
+    await db.refresh(subscription)
 
     # Sync with RemnaWave
     try:

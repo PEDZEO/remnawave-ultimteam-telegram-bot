@@ -460,7 +460,7 @@ class RemnaWaveAPI:
 
         for attempt in range(max_retries + 1):
             try:
-                request_json = data if data else None
+                request_json = data or None
                 async with self.session.request(
                     method=method,
                     url=url,
@@ -1316,13 +1316,13 @@ class RemnaWaveAPI:
         # Парсим userTraffic из нового формата API
         user_traffic = self._parse_user_traffic(user_data.get('userTraffic'))
 
-        # Получаем status с fallback на ACTIVE
-        status_str = user_data.get('status') or 'ACTIVE'
+        # Unknown or missing panel states must fail closed.
+        status_str = user_data.get('status') or 'DISABLED'
         try:
             status = UserStatus(status_str)
         except ValueError:
-            logger.warning('Неизвестный статус пользователя: используем ACTIVE', status_str=status_str)
-            status = UserStatus.ACTIVE
+            logger.warning('Неизвестный статус пользователя: используем DISABLED', status_str=status_str)
+            status = UserStatus.DISABLED
 
         # Получаем trafficLimitStrategy с fallback
         strategy_str = user_data.get('trafficLimitStrategy') or 'NO_RESET'

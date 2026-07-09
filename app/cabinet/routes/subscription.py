@@ -17,7 +17,7 @@ from app.database.crud.subscription import (
     get_subscription_by_user_id,
 )
 from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
-from app.database.crud.transaction import create_transaction
+from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
 from app.services.notification_delivery_service import (
@@ -535,6 +535,17 @@ async def purchase_traffic(
         )
 
     subscription = user.subscription
+    if subscription.traffic_limit_gb == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Cannot add traffic to unlimited subscription',
+        )
+    if request.gb <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Traffic package must be greater than 0 GB',
+        )
+
     tariff = None
     base_price_kopeks = 0
     is_tariff_mode = settings.is_tariffs_mode() and subscription.tariff_id
@@ -688,22 +699,40 @@ async def purchase_traffic(
         traffic_description = f'Докупка {request.gb} ГБ трафика'
 
     # Списываем баланс
-    success = await subtract_user_balance(db, user, final_price, traffic_description)
+    success = await subtract_user_balance(db, user, final_price, traffic_description, commit=False)
     if not success:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to charge balance',
         )
 
     # Добавляем трафик
-    await add_subscription_traffic(db, subscription, request.gb)
+    await add_subscription_traffic(db, subscription, request.gb, commit=False)
 
     # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)
     from app.database.crud.subscription import reactivate_subscription
 
-    await reactivate_subscription(db, subscription)
+    await reactivate_subscription(db, subscription, commit=False)
+
+    transaction = await create_transaction(
+        db=db,
+        user_id=user.id,
+        type=TransactionType.SUBSCRIPTION_PAYMENT,
+        amount_kopeks=final_price,
+        description=traffic_description,
+        commit=False,
+    )
 
     await db.commit()
+    await emit_transaction_side_effects(
+        db,
+        transaction,
+        user_id=user.id,
+        type=TransactionType.SUBSCRIPTION_PAYMENT,
+        amount_kopeks=final_price,
+        description=traffic_description,
+    )
 
     # Синхронизируем с RemnaWave
     try:
@@ -719,14 +748,6 @@ async def purchase_traffic(
         logger.error('Failed to sync traffic with RemnaWave', error=e)
 
     # Создаём транзакцию
-    await create_transaction(
-        db=db,
-        user_id=user.id,
-        type=TransactionType.SUBSCRIPTION_PAYMENT,
-        amount_kopeks=final_price,
-        description=traffic_description,
-    )
-
     await db.refresh(user)
     await db.refresh(subscription)
 

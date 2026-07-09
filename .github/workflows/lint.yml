@@ -43,6 +43,9 @@ jobs:
       - name: Run tests with coverage threshold
         run: uv run pytest --maxfail=1 --disable-warnings --cov=app --cov-report=term --cov-fail-under=25
 
+      - name: Audit production dependencies
+        run: uv run pip-audit
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -60,5 +63,12 @@ jobs:
         run: >
           uv run mypy
           -m app.external.remnawave_api
+          -m app.database.migrations
+          -m app.database.advisory_lock
           -m app.database.crud.subscription
+          -m app.database.crud.user
+          -m app.services.daily_subscription_service
+          -m app.services.tap_reward_service
+          -m app.cabinet.routes.tap_rewards
+          -m app.cabinet.routes.auth
           -m app.cabinet.routes.subscription_helpers

@@ -8,11 +8,12 @@ import pytest
 
 from app.database.crud import subscription as subscription_crud
 from app.database.crud.subscription import (
+    add_subscription_traffic,
     extend_subscription,
     get_subscription_base_traffic_limit,
     get_subscription_total_with_purchased_traffic,
 )
-from app.database.models import SubscriptionStatus
+from app.database.models import Subscription, SubscriptionStatus
 
 
 class _FakeSession:
@@ -20,6 +21,19 @@ class _FakeSession:
         self.commit = AsyncMock()
         self.flush = AsyncMock()
         self.refresh = AsyncMock()
+        self.execute = AsyncMock(return_value=_FakeExecuteResult())
+        self.added: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+
+class _FakeExecuteResult:
+    def scalars(self) -> _FakeExecuteResult:
+        return self
+
+    def all(self) -> list[object]:
+        return []
 
 
 def test_subscription_base_traffic_excludes_active_topups() -> None:
@@ -82,3 +96,55 @@ async def test_extending_subscription_does_not_make_topup_permanent(monkeypatch:
     assert subscription.traffic_reset_at is not None
     db.commit.assert_awaited()
     db.refresh.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_traffic_rejects_unlimited_subscription() -> None:
+    now = datetime.now(UTC)
+    subscription = Subscription(
+        id=4,
+        user_id=40,
+        status=SubscriptionStatus.ACTIVE.value,
+        end_date=now + timedelta(days=30),
+        traffic_limit_gb=0,
+        purchased_traffic_gb=0,
+        traffic_reset_at=None,
+    )
+    db = _FakeSession()
+
+    with pytest.raises(ValueError, match='unlimited'):
+        await add_subscription_traffic(db, subscription, 10)
+
+    assert subscription.traffic_limit_gb == 0
+    assert subscription.purchased_traffic_gb == 0
+    assert subscription.traffic_reset_at is None
+    assert db.added == []
+    db.execute.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_add_subscription_traffic_commit_false_flushes_without_commit() -> None:
+    now = datetime.now(UTC)
+    subscription = Subscription(
+        id=5,
+        user_id=50,
+        status=SubscriptionStatus.ACTIVE.value,
+        end_date=now + timedelta(days=30),
+        traffic_limit_gb=35,
+        purchased_traffic_gb=5,
+        traffic_reset_at=now + timedelta(days=10),
+    )
+    db = _FakeSession()
+
+    await add_subscription_traffic(db, subscription, 10, commit=False)
+
+    assert subscription.traffic_limit_gb == 45
+    assert subscription.purchased_traffic_gb == 15
+    assert subscription.traffic_reset_at is not None
+    assert len(db.added) == 1
+    db.execute.assert_awaited_once()
+    db.flush.assert_awaited_once()
+    db.commit.assert_not_awaited()
+    db.refresh.assert_not_awaited()

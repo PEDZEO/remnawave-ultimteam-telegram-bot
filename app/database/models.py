@@ -1747,7 +1747,7 @@ class User(Base):
     referrals = relationship(
         'User',
         backref='referrer',
-        remote_side=[id],
+        remote_side=[id],  # noqa: A003 - SQLAlchemy relationship references the mapped id column.
         foreign_keys='User.referred_by_id',
         post_update=True,
     )

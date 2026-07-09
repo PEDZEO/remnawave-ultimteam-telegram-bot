@@ -387,19 +387,16 @@ return c
             return fail_closed
 
     @staticmethod
-    async def is_rate_limited(user_id: int, action: str, limit: int, window: int) -> bool:
+    async def is_rate_limited(
+        user_id: int | str,
+        action: str,
+        limit: int,
+        window: int,
+        *,
+        fail_closed: bool = False,
+    ) -> bool:
         key = cache_key('rate_limit', user_id, action)
-        current = await cache.get(key)
-
-        if current is None:
-            await cache.set(key, 1, window)
-            return False
-
-        if current >= limit:
-            return True
-
-        await cache.increment(key)
-        return False
+        return await RateLimitCache._atomic_rate_check(key, limit, window, fail_closed=fail_closed)
 
     @staticmethod
     async def reset_rate_limit(user_id: int, action: str) -> bool:

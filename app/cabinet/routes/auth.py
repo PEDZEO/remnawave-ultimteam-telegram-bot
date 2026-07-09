@@ -3,9 +3,10 @@
 import asyncio
 import hashlib
 from datetime import UTC, datetime
+from ipaddress import ip_address
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ from app.database.models import CabinetRefreshToken, User
 from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
 from app.services.referral_service import process_referral_registration
+from app.utils.cache import RateLimitCache
 from app.utils.timezone import panel_datetime_to_utc
 
 from ..auth import (
@@ -79,6 +81,55 @@ from ..services.email_template_overrides import get_rendered_override
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/auth', tags=['Cabinet Auth'])
+
+
+def _get_auth_client_ip(http_request: Request) -> str:
+    direct_ip = http_request.client.host if http_request.client else 'unknown'
+    try:
+        trusted_proxy = ip_address(direct_ip).is_private or ip_address(direct_ip).is_loopback
+    except ValueError:
+        trusted_proxy = False
+
+    headers = getattr(http_request, 'headers', {})
+    forwarded_for = headers.get('x-forwarded-for', '') if trusted_proxy else ''
+    candidate = forwarded_for.split(',', 1)[0].strip()
+    if candidate:
+        try:
+            return str(ip_address(candidate))
+        except ValueError:
+            pass
+    return direct_ip
+
+
+async def _enforce_auth_rate_limit(
+    http_request: Request,
+    *,
+    action: str,
+    identifier: str,
+    identifier_limit: int,
+    ip_limit: int,
+    window: int,
+) -> None:
+    """Limit both account-targeted attempts and broad attempts from one client."""
+    client_ip = _get_auth_client_ip(http_request)
+    identifier_hash = hashlib.sha256(identifier.strip().lower().encode()).hexdigest()[:24]
+    checks = (
+        (f'ip:{client_ip}', f'auth_{action}_ip', ip_limit),
+        (f'ip:{client_ip}:id:{identifier_hash}', f'auth_{action}_identifier', identifier_limit),
+    )
+
+    for subject, rate_action, limit in checks:
+        if await RateLimitCache.is_rate_limited(
+            subject,
+            rate_action,
+            limit=limit,
+            window=window,
+            fail_closed=True,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail='Too many attempts. Please try again later.',
+            )
 
 
 def _user_to_response(user: User) -> UserResponse:
@@ -597,7 +648,7 @@ async def register_email(
                 },
                 db=db,
             )
-            custom_subject, custom_body = override if override else (None, None)
+            custom_subject, custom_body = override or (None, None)
 
             await asyncio.to_thread(
                 email_service.send_verification_email,
@@ -621,6 +672,7 @@ async def register_email(
 @router.post('/email/register/standalone', response_model=RegisterResponse)
 async def register_email_standalone(
     request: EmailRegisterStandaloneRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """
@@ -633,6 +685,15 @@ async def register_email_standalone(
 
     If TEST_EMAIL is configured, test email accounts are auto-verified.
     """
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='email_register',
+        identifier=request.email,
+        identifier_limit=3,
+        ip_limit=10,
+        window=3600,
+    )
+
     # Check if this is a test email registration
     is_test_email = settings.is_test_email(request.email)
 
@@ -880,12 +941,22 @@ async def resend_verification(
 @router.post('/email/login', response_model=AuthResponse)
 async def login_email(
     request: EmailLoginRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Login with email and password.
 
     Test email accounts (configured via TEST_EMAIL) bypass email verification.
     """
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='email_login',
+        identifier=request.email,
+        identifier_limit=10,
+        ip_limit=60,
+        window=300,
+    )
+
     # Check if this is a test email login
     is_test_email = settings.is_test_email(request.email)
 
@@ -956,9 +1027,19 @@ async def login_email(
 @router.post('/refresh', response_model=TokenResponse)
 async def refresh_token(
     request: RefreshTokenRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Refresh access token using refresh token."""
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='refresh',
+        identifier=request.refresh_token,
+        identifier_limit=15,
+        ip_limit=120,
+        window=60,
+    )
+
     payload = get_token_payload(request.refresh_token, expected_type='refresh')
 
     if not payload:
@@ -978,10 +1059,12 @@ async def refresh_token(
     # Verify token exists in database and is not revoked
     token_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
     result = await db.execute(
-        select(CabinetRefreshToken).where(
+        select(CabinetRefreshToken)
+        .where(
             CabinetRefreshToken.token_hash == token_hash,
             CabinetRefreshToken.revoked_at.is_(None),
         )
+        .with_for_update()
     )
     token_record = result.scalar_one_or_none()
 
@@ -989,6 +1072,12 @@ async def refresh_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Refresh token not found or revoked',
+        )
+
+    if token_record.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Refresh token owner mismatch',
         )
 
     if not token_record.is_valid:
@@ -1015,9 +1104,21 @@ async def refresh_token(
     )
     expires_in = settings.get_cabinet_access_token_expire_minutes() * 60
 
+    new_refresh_token = create_refresh_token(user.id)
+    token_record.revoked_at = datetime.now(UTC)
+    db.add(
+        CabinetRefreshToken(
+            user_id=user.id,
+            token_hash=hashlib.sha256(new_refresh_token.encode()).hexdigest(),
+            device_info=token_record.device_info,
+            expires_at=get_refresh_token_expires_at(),
+        )
+    )
+    await db.commit()
+
     return TokenResponse(
         access_token=access_token,
-        refresh_token=request.refresh_token,
+        refresh_token=new_refresh_token,
         token_type='bearer',
         expires_in=expires_in,
     )
@@ -1048,9 +1149,19 @@ async def logout(
 @router.post('/password/forgot')
 async def forgot_password(
     request: PasswordForgotRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Request password reset."""
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='password_forgot',
+        identifier=request.email,
+        identifier_limit=3,
+        ip_limit=20,
+        window=900,
+    )
+
     result = await db.execute(select(User).where(User.email == request.email))
     user = result.scalar_one_or_none()
 
@@ -1100,9 +1211,19 @@ async def forgot_password(
 @router.post('/password/reset')
 async def reset_password(
     request: PasswordResetRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Reset password with token."""
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='password_reset',
+        identifier=request.token,
+        identifier_limit=10,
+        ip_limit=30,
+        window=900,
+    )
+
     result = await db.execute(select(User).where(User.password_reset_token == request.token))
     user = result.scalar_one_or_none()
 

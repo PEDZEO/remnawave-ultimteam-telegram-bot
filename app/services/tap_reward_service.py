@@ -58,7 +58,7 @@ class TapRewardService:
 
         progress = await self._get_or_create_progress(db, user.id)
         daily_stats = await self._get_or_create_daily_stats(db, user.id, stat_date)
-        self._reset_daily_counter_if_needed(progress, today=now.date())
+        self._reset_daily_counter_if_needed(progress, today=stat_date)
         self._reset_streak_if_needed(progress, now=now)
 
         progress.total_taps = max(0, int(progress.total_taps or 0)) + safe_count
@@ -115,7 +115,8 @@ class TapRewardService:
             return self._empty_result(enabled=True, threshold=threshold, daily_limit=daily_limit)
 
         now = datetime.now(UTC)
-        self._reset_daily_counter_if_needed(progress, today=now.date())
+        stat_date = now.astimezone(self.moscow_tz).date()
+        self._reset_daily_counter_if_needed(progress, today=stat_date)
         self._reset_streak_if_needed(progress, now=now)
         await db.commit()
         await db.refresh(progress)

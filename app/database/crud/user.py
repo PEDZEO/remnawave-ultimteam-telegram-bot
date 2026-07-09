@@ -651,7 +651,7 @@ async def subtract_user_balance(
         old_balance = user.balance_kopeks
         user.balance_kopeks -= amount_kopeks
 
-        if consume_promo_offer and getattr(user, 'promo_offer_discount_percent', 0):
+        if consume_promo_offer and (user.promo_offer_discount_percent or 0) > 0:
             user.promo_offer_discount_percent = 0
             user.promo_offer_discount_source = None
             user.promo_offer_discount_expires_at = None
@@ -824,6 +824,7 @@ async def get_users_list(
         selectinload(User.promo_group),
         selectinload(User.referrer),
     )
+    query = query.where(or_(User.auth_type.is_(None), User.auth_type != 'merged'))
 
     if status:
         query = query.where(User.status == status.value)
@@ -880,9 +881,11 @@ async def get_users_list(
         query = query.outerjoin(Subscription, Subscription.user_id == User.id)
         query = query.order_by(traffic_sort.desc(), User.created_at.desc())
     elif order_by_total_spent:
+        assert transactions_stats is not None
         order_column = func.coalesce(transactions_stats.c.total_spent, 0)
         query = query.order_by(order_column.desc(), User.created_at.desc())
     elif order_by_purchase_count:
+        assert transactions_stats is not None
         order_column = func.coalesce(transactions_stats.c.purchase_count, 0)
         query = query.order_by(order_column.desc(), User.created_at.desc())
     elif order_by_balance:
@@ -909,7 +912,7 @@ async def get_users_list(
 async def get_users_count(
     db: AsyncSession, status: UserStatus | None = None, search: str | None = None, email: str | None = None
 ) -> int:
-    query = select(func.count(User.id))
+    query = select(func.count(User.id)).where(or_(User.auth_type.is_(None), User.auth_type != 'merged'))
 
     if status:
         query = query.where(User.status == status.value)
@@ -1096,27 +1099,39 @@ async def delete_user(db: AsyncSession, user: User) -> bool:
 
 
 async def get_users_statistics(db: AsyncSession) -> dict:
-    total_result = await db.execute(select(func.count(User.id)))
+    visible_user_filter = or_(User.auth_type.is_(None), User.auth_type != 'merged')
+    total_result = await db.execute(select(func.count(User.id)).where(visible_user_filter))
     total_users = total_result.scalar()
 
-    active_result = await db.execute(select(func.count(User.id)).where(User.status == UserStatus.ACTIVE.value))
+    active_result = await db.execute(
+        select(func.count(User.id)).where(visible_user_filter, User.status == UserStatus.ACTIVE.value)
+    )
     active_users = active_result.scalar()
 
     today = datetime.now(UTC).date()
     today_result = await db.execute(
-        select(func.count(User.id)).where(and_(User.created_at >= today, User.status == UserStatus.ACTIVE.value))
+        select(func.count(User.id)).where(
+            visible_user_filter,
+            and_(User.created_at >= today, User.status == UserStatus.ACTIVE.value),
+        )
     )
     new_today = today_result.scalar()
 
     week_ago = datetime.now(UTC) - timedelta(days=7)
     week_result = await db.execute(
-        select(func.count(User.id)).where(and_(User.created_at >= week_ago, User.status == UserStatus.ACTIVE.value))
+        select(func.count(User.id)).where(
+            visible_user_filter,
+            and_(User.created_at >= week_ago, User.status == UserStatus.ACTIVE.value),
+        )
     )
     new_week = week_result.scalar()
 
     month_ago = datetime.now(UTC) - timedelta(days=30)
     month_result = await db.execute(
-        select(func.count(User.id)).where(and_(User.created_at >= month_ago, User.status == UserStatus.ACTIVE.value))
+        select(func.count(User.id)).where(
+            visible_user_filter,
+            and_(User.created_at >= month_ago, User.status == UserStatus.ACTIVE.value),
+        )
     )
     new_month = month_result.scalar()
 

@@ -17,7 +17,11 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/ultimteam-vpn-bot
 
 jobs:
+  quality:
+    uses: ./.github/workflows/lint.yml
+
   build-and-push:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read

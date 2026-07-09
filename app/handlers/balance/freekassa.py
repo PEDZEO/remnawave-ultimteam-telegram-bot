@@ -20,9 +20,17 @@ from app.utils.decorators import error_handler
 logger = structlog.get_logger(__name__)
 
 
+def _get_freekassa_sbp_name() -> str:
+    return settings.get_freekassa_sbp_display_name()
+
+
+def _get_freekassa_card_name() -> str:
+    return settings.get_freekassa_card_display_name()
+
+
 FREEKASSA_SUB_METHODS = {
-    'freekassa_sbp': {'payment_system_id': 44, 'get_name': lambda: settings.get_freekassa_sbp_display_name()},
-    'freekassa_card': {'payment_system_id': 36, 'get_name': lambda: settings.get_freekassa_card_display_name()},
+    'freekassa_sbp': {'payment_system_id': 44, 'get_name': _get_freekassa_sbp_name},
+    'freekassa_card': {'payment_system_id': 36, 'get_name': _get_freekassa_card_name},
 }
 
 

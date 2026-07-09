@@ -13,12 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.advisory_lock import distributed_job_lock
 from app.database.crud.subscription import (
     get_daily_subscriptions_for_charge,
     suspend_daily_subscription_insufficient_balance,
     update_daily_charge_time,
 )
-from app.database.crud.transaction import create_transaction
+from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import get_user_by_id, subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import PaymentMethod, Subscription, TransactionType, User
@@ -30,6 +31,9 @@ from app.services.notification_delivery_service import (
 
 
 logger = structlog.get_logger(__name__)
+
+_DAILY_CHARGES_LOCK_ID = 7_612_946_175_504_209_052
+_TRAFFIC_EXPIRY_LOCK_ID = 7_612_946_175_504_209_053
 
 
 class DailySubscriptionService:
@@ -81,32 +85,38 @@ class DailySubscriptionService:
         }
 
         try:
-            async with AsyncSessionLocal() as db:
-                try:
-                    subscriptions = await get_daily_subscriptions_for_charge(db)
-                    stats['checked'] = len(subscriptions)
+            async with distributed_job_lock(_DAILY_CHARGES_LOCK_ID, name='daily-subscription-charges') as acquired:
+                if not acquired:
+                    return stats
 
-                    for subscription in subscriptions:
-                        try:
-                            result = await self._process_single_charge(db, subscription)
-                            if result == 'charged':
-                                stats['charged'] += 1
-                            elif result == 'suspended':
-                                stats['suspended'] += 1
-                            elif result == 'error':
+                async with AsyncSessionLocal() as db:
+                    try:
+                        subscriptions = await get_daily_subscriptions_for_charge(db)
+                        stats['checked'] = len(subscriptions)
+
+                        for subscription in subscriptions:
+                            try:
+                                result = await self._process_single_charge(db, subscription)
+                                if result == 'charged':
+                                    stats['charged'] += 1
+                                elif result == 'suspended':
+                                    stats['suspended'] += 1
+                                elif result == 'error':
+                                    stats['errors'] += 1
+                                    break
+                            except Exception as e:
+                                await db.rollback()
+                                logger.error(
+                                    'Ошибка обработки суточной подписки',
+                                    subscription_id=subscription.id,
+                                    error=e,
+                                    exc_info=True,
+                                )
                                 stats['errors'] += 1
-                        except Exception as e:
-                            logger.error(
-                                'Ошибка обработки суточной подписки',
-                                subscription_id=subscription.id,
-                                error=e,
-                                exc_info=True,
-                            )
-                            stats['errors'] += 1
-                    await db.commit()
-                except Exception as e:
-                    logger.error('Ошибка при обработке подписок', error=e, exc_info=True)
-                    await db.rollback()
+                                break
+                    except Exception as e:
+                        logger.error('Ошибка при обработке подписок', error=e, exc_info=True)
+                        await db.rollback()
 
         except Exception as e:
             logger.error('Ошибка при получении подписок для списания', error=e, exc_info=True)
@@ -141,7 +151,8 @@ class DailySubscriptionService:
         # Проверяем баланс
         if user.balance_kopeks < daily_price:
             # Недостаточно средств - приостанавливаем подписку
-            await suspend_daily_subscription_insufficient_balance(db, subscription)
+            await suspend_daily_subscription_insufficient_balance(db, subscription, commit=False)
+            await db.commit()
 
             # Уведомляем пользователя
             if self._bot:
@@ -165,6 +176,7 @@ class DailySubscriptionService:
                 daily_price,
                 description,
                 mark_as_paid_subscription=True,
+                commit=False,
             )
 
             if not deducted:
@@ -179,11 +191,22 @@ class DailySubscriptionService:
                 amount_kopeks=daily_price,
                 description=description,
                 payment_method=PaymentMethod.BALANCE,
+                commit=False,
             )
 
             # Обновляем время последнего списания и продлеваем подписку
             old_end_date = subscription.end_date
-            subscription = await update_daily_charge_time(db, subscription)
+            subscription = await update_daily_charge_time(db, subscription, commit=False)
+            await db.commit()
+            await emit_transaction_side_effects(
+                db,
+                transaction,
+                amount_kopeks=daily_price,
+                user_id=user.id,
+                type=TransactionType.SUBSCRIPTION_PAYMENT,
+                payment_method=PaymentMethod.BALANCE,
+                description=description,
+            )
 
             user_id_display = user.telegram_id or user.email or f'#{user.id}'
             logger.info(
@@ -233,6 +256,7 @@ class DailySubscriptionService:
             return 'charged'
 
         except Exception as e:
+            await db.rollback()
             logger.error(
                 'Ошибка при списании средств для подписки', subscription_id=subscription.id, error=e, exc_info=True
             )
@@ -320,39 +344,44 @@ class DailySubscriptionService:
         from app.database.models import TrafficPurchase
 
         try:
-            async with AsyncSessionLocal() as db:
-                try:
-                    # Находим все истекшие докупки
-                    now = datetime.now(UTC)
-                    query = select(TrafficPurchase).where(TrafficPurchase.expires_at <= now)
-                    result = await db.execute(query)
-                    expired_purchases = result.scalars().all()
-                    stats['checked'] = len(expired_purchases)
+            async with distributed_job_lock(_TRAFFIC_EXPIRY_LOCK_ID, name='traffic-topup-expiry') as acquired:
+                if not acquired:
+                    return stats
 
-                    # Группируем по подпискам для обновления
-                    subscriptions_to_update = {}
-                    for purchase in expired_purchases:
-                        if purchase.subscription_id not in subscriptions_to_update:
-                            subscriptions_to_update[purchase.subscription_id] = []
-                        subscriptions_to_update[purchase.subscription_id].append(purchase)
+                async with AsyncSessionLocal() as db:
+                    try:
+                        # Находим все истекшие докупки
+                        now = datetime.now(UTC)
+                        query = select(TrafficPurchase).where(TrafficPurchase.expires_at <= now)
+                        result = await db.execute(query)
+                        expired_purchases = result.scalars().all()
+                        stats['checked'] = len(expired_purchases)
 
-                    # Удаляем истекшие докупки и обновляем подписки
-                    for subscription_id, purchases in subscriptions_to_update.items():
-                        try:
-                            await self._reset_subscription_traffic(db, subscription_id, purchases)
-                            stats['reset'] += len(purchases)
-                        except Exception as e:
-                            logger.error(
-                                'Ошибка сброса трафика подписки',
-                                subscription_id=subscription_id,
-                                error=e,
-                                exc_info=True,
-                            )
-                            stats['errors'] += 1
-                    await db.commit()
-                except Exception as e:
-                    logger.error('Ошибка при обработке сброса трафика', error=e, exc_info=True)
-                    await db.rollback()
+                        # Группируем по подпискам для обновления
+                        subscriptions_to_update: dict[int, list[TrafficPurchase]] = {}
+                        for purchase in expired_purchases:
+                            if purchase.subscription_id not in subscriptions_to_update:
+                                subscriptions_to_update[purchase.subscription_id] = []
+                            subscriptions_to_update[purchase.subscription_id].append(purchase)
+
+                        # Удаляем истекшие докупки и обновляем подписки
+                        for subscription_id, purchases in subscriptions_to_update.items():
+                            try:
+                                await self._reset_subscription_traffic(db, subscription_id, purchases)
+                                stats['reset'] += len(purchases)
+                            except Exception as e:
+                                await db.rollback()
+                                logger.error(
+                                    'Ошибка сброса трафика подписки',
+                                    subscription_id=subscription_id,
+                                    error=e,
+                                    exc_info=True,
+                                )
+                                stats['errors'] += 1
+                                break
+                    except Exception as e:
+                        logger.error('Ошибка при обработке сброса трафика', error=e, exc_info=True)
+                        await db.rollback()
 
         except Exception as e:
             logger.error('Ошибка при получении подписок для сброса трафика', error=e, exc_info=True)
@@ -364,7 +393,7 @@ class DailySubscriptionService:
         from app.database.models import TrafficPurchase
 
         # Получаем подписку
-        subscription_query = select(Subscription).where(Subscription.id == subscription_id)
+        subscription_query = select(Subscription).where(Subscription.id == subscription_id).with_for_update()
         subscription_result = await db.execute(subscription_query)
         subscription = subscription_result.scalar_one_or_none()
 
@@ -430,10 +459,6 @@ class DailySubscriptionService:
         # Защита от отрицательного базового лимита
         base_limit = max(0, base_limit)
 
-        # Удаляем истекшие записи
-        for purchase in expired_purchases:
-            await db.delete(purchase)
-
         # Рассчитываем новый лимит
         new_purchased = remaining_purchased_gb
         new_limit = base_limit + new_purchased
@@ -462,6 +487,22 @@ class DailySubscriptionService:
 
         subscription.updated_at = datetime.now(UTC)
 
+        await db.flush()
+
+        # Keep expiry rows until RemnaWave accepts the lower limit. A failed sync is retried later.
+        user = await get_user_by_id(db, subscription.user_id) if subscription.user_id else None
+        if user and user.remnawave_uuid:
+            from app.services.subscription_service import SubscriptionService
+
+            subscription_service = SubscriptionService()
+            updated_user = await subscription_service.update_remnawave_user(db, subscription, commit=False)
+            if updated_user is None:
+                await db.rollback()
+                raise RuntimeError('RemnaWave rejected traffic top-up expiry update')
+
+        for purchase in expired_purchases:
+            await db.delete(purchase)
+
         await db.commit()
 
         logger.info(
@@ -476,15 +517,6 @@ class DailySubscriptionService:
             total_expired_gb=total_expired_gb,
             expired_purchases_count=len(expired_purchases),
         )
-
-        # Синхронизируем с RemnaWave
-        try:
-            from app.services.subscription_service import SubscriptionService
-
-            subscription_service = SubscriptionService()
-            await subscription_service.update_remnawave_user(db, subscription)
-        except Exception as e:
-            logger.warning('Не удалось синхронизировать с RemnaWave после сброса трафика', error=e)
 
         # Уведомляем пользователя
         if self._bot and subscription.user_id:

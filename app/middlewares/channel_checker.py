@@ -436,7 +436,7 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                 # Notify user about deactivation
                 try:
                     normalized = _normalize_channels(channels)
-                    texts = get_texts(user.language if user.language else DEFAULT_LANGUAGE)
+                    texts = get_texts(user.language or DEFAULT_LANGUAGE)
                     notification_text = texts.t(
                         'SUBSCRIPTION_DEACTIVATED_CHANNEL_UNSUBSCRIBE',
                         '🚫 Ваша подписка приостановлена, так как вы отписались от канала.\n\n'

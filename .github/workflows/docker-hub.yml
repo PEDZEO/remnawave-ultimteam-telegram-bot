@@ -12,7 +12,11 @@ on:
       - main
 
 jobs:
+  quality:
+    uses: ./.github/workflows/lint.yml
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code

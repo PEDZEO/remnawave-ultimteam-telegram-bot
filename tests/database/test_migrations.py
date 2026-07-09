@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -7,6 +9,15 @@ import pytest
 
 import app.database.database as database_module
 from app.database import migrations
+
+
+@pytest.fixture(autouse=True)
+def isolate_migration_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    @asynccontextmanager
+    async def unlocked():
+        yield
+
+    monkeypatch.setattr(migrations, '_migration_execution_lock', unlocked)
 
 
 @pytest.mark.asyncio
@@ -121,6 +132,41 @@ async def test_stamp_alembic_head_runs_stamp_command(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_run_alembic_upgrade_serializes_concurrent_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    active_calls = 0
+    max_active_calls = 0
+
+    @asynccontextmanager
+    async def real_process_lock():
+        async with migrations._migration_process_lock:
+            yield
+
+    async def fake_upgrade_locked() -> None:
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        if not first_entered.is_set():
+            first_entered.set()
+            await release_first.wait()
+        active_calls -= 1
+
+    monkeypatch.setattr(migrations, '_migration_execution_lock', real_process_lock)
+    monkeypatch.setattr(migrations, '_run_alembic_upgrade_locked', fake_upgrade_locked)
+
+    first = asyncio.create_task(migrations.run_alembic_upgrade())
+    await first_entered.wait()
+    second = asyncio.create_task(migrations.run_alembic_upgrade())
+    await asyncio.sleep(0)
+
+    assert max_active_calls == 1
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert max_active_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_normalize_overlapping_current_revisions_prunes_ancestor_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,12 +202,18 @@ async def test_normalize_overlapping_current_revisions_prunes_ancestor_rows(
             }
             return [SimpleNamespace(revision=revision) for revision in lineages[head]]
 
+    def make_config() -> object:
+        return object()
+
+    def make_script(_cfg: object) -> FakeScript:
+        return FakeScript()
+
     fake_connection = FakeConnection()
     monkeypatch.setattr(database_module, 'engine', FakeEngine(fake_connection))
     monkeypatch.setattr(migrations, '_has_public_table', AsyncMock(return_value=True))
     monkeypatch.setattr(migrations, '_get_current_alembic_revisions', AsyncMock(return_value=['0019', '0040']))
-    monkeypatch.setattr(migrations, '_get_alembic_config', lambda: object())
-    monkeypatch.setattr(migrations.ScriptDirectory, 'from_config', lambda _cfg: FakeScript())
+    monkeypatch.setattr(migrations, '_get_alembic_config', make_config)
+    monkeypatch.setattr(migrations.ScriptDirectory, 'from_config', make_script)
 
     changed = await migrations._normalize_overlapping_current_revisions_if_needed()
 

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -8,6 +9,7 @@ import app.services.tap_reward_service as tap_reward_module
 
 
 pytestmark = pytest.mark.asyncio
+MOSCOW_TZ = ZoneInfo('Europe/Moscow')
 
 
 def _db():
@@ -23,7 +25,7 @@ def _progress(**overrides):
         'reward_count': 0,
         'streak_reward_count': 0,
         'daily_reward_count': 0,
-        'daily_reward_date': now.date(),
+        'daily_reward_date': now.astimezone(MOSCOW_TZ).date(),
         'last_tap_at': None,
         'last_reward_at': None,
         'updated_at': None,
@@ -35,7 +37,7 @@ def _progress(**overrides):
 def _daily_stats(**overrides):
     data = {
         'user_id': 1,
-        'stat_date': datetime.now(UTC).date(),
+        'stat_date': datetime.now(UTC).astimezone(MOSCOW_TZ).date(),
         'tap_count': 0,
         'reward_count': 0,
         'balance_reward_kopeks': 0,
@@ -197,7 +199,7 @@ async def test_tap_reward_continues_to_next_threshold(monkeypatch):
 
 async def test_tap_reward_daily_limit_grants_waiting_reward_next_day(monkeypatch):
     service = tap_reward_module.TapRewardService()
-    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    yesterday = datetime.now(UTC).astimezone(MOSCOW_TZ).date() - timedelta(days=1)
     progress = _progress(
         total_taps=6,
         streak_taps=6,

@@ -1,6 +1,8 @@
 """Programmatic Alembic migration runner for bot startup."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,36 @@ logger = structlog.get_logger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _ALEMBIC_INI = _PROJECT_ROOT / 'alembic.ini'
+_MIGRATION_ADVISORY_LOCK_ID = 7_612_946_175_504_209_051
+_migration_process_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _migration_execution_lock() -> AsyncIterator[None]:
+    """Serialize schema changes across tasks and PostgreSQL application instances."""
+    from app.database.database import IS_SQLITE, engine
+
+    async with _migration_process_lock:
+        if IS_SQLITE:
+            yield
+            return
+
+        async with engine.connect() as conn:
+            await conn.execute(
+                text('SELECT pg_advisory_lock(:lock_id)'),
+                {'lock_id': _MIGRATION_ADVISORY_LOCK_ID},
+            )
+            logger.info('Acquired PostgreSQL migration advisory lock')
+            try:
+                yield
+            finally:
+                try:
+                    await conn.execute(
+                        text('SELECT pg_advisory_unlock(:lock_id)'),
+                        {'lock_id': _MIGRATION_ADVISORY_LOCK_ID},
+                    )
+                except Exception:
+                    logger.exception('Failed to release PostgreSQL migration advisory lock')
 
 
 def _get_alembic_config() -> Config:
@@ -253,6 +285,12 @@ async def _normalize_overlapping_current_revisions_if_needed() -> bool:
 
 async def run_alembic_upgrade() -> None:
     """Run ``alembic upgrade heads``, auto-stamping existing databases first."""
+    async with _migration_execution_lock():
+        await _run_alembic_upgrade_locked()
+
+
+async def _run_alembic_upgrade_locked() -> None:
+    """Run schema bootstrap and Alembic while the global migration lock is held."""
     await _remap_legacy_revision_if_needed()
     await _normalize_overlapping_current_revisions_if_needed()
 

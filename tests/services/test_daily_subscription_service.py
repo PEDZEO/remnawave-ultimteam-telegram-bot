@@ -32,6 +32,8 @@ class _FakeSession:
         self.execute_calls = 0
         self.deleted = []
         self.commit = AsyncMock()
+        self.flush = AsyncMock()
+        self.rollback = AsyncMock()
 
     async def execute(self, _query):
         self.execute_calls += 1
@@ -128,3 +130,41 @@ async def test_reset_subscription_traffic_keeps_remaining_active_purchases(
     assert subscription.traffic_limit_gb == 110
     assert subscription.purchased_traffic_gb == 10
     assert subscription.traffic_reset_at == next_expiry
+
+
+@pytest.mark.asyncio
+async def test_reset_subscription_traffic_retries_when_remnawave_sync_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSubscriptionService:
+        async def update_remnawave_user(self, *_args, **_kwargs):
+            return None
+
+    import app.services.subscription_service as subscription_service_module
+
+    monkeypatch.setattr(subscription_service_module, 'SubscriptionService', _FakeSubscriptionService)
+    monkeypatch.setattr(
+        daily_service_module,
+        'get_user_by_id',
+        AsyncMock(return_value=SimpleNamespace(remnawave_uuid='remna-user-id')),
+    )
+
+    subscription = SimpleNamespace(
+        id=12,
+        user_id=5,
+        tariff_id=None,
+        traffic_limit_gb=110,
+        purchased_traffic_gb=10,
+        traffic_reset_at=datetime.now(UTC),
+        updated_at=None,
+    )
+    expired_purchase = SimpleNamespace(traffic_gb=10)
+    db = _FakeSession(subscription, remaining_purchases=[])
+
+    service = DailySubscriptionService()
+    with pytest.raises(RuntimeError, match='RemnaWave rejected'):
+        await service._reset_subscription_traffic(db, subscription.id, [expired_purchase])
+
+    assert db.deleted == []
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()

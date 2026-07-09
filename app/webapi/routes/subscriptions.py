@@ -254,6 +254,14 @@ async def add_subscription_traffic_endpoint(
     db: AsyncSession = Depends(get_db_session),
 ) -> SubscriptionResponse:
     subscription = await _get_subscription(db, subscription_id)
+    if payload.gb <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Traffic amount must be greater than 0 GB')
+    if subscription.traffic_limit_gb == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Cannot add traffic to unlimited subscription',
+        )
+
     subscription = await add_subscription_traffic(db, subscription, payload.gb)
 
     # Реактивируем подписку если она была DISABLED/EXPIRED (например, после LIMITED/EXPIRED в RemnaWave)

@@ -891,7 +891,7 @@ class Settings(BaseSettings):
     WEB_API_HOST: str = '0.0.0.0'
     WEB_API_PORT: int = 8080
     WEB_API_WORKERS: int = 1
-    WEB_API_ALLOWED_ORIGINS: str = '*'
+    WEB_API_ALLOWED_ORIGINS: str = ''
     WEB_API_DOCS_ENABLED: bool = False
     WEB_API_TITLE: str = 'Remnawave Bot Admin API'
     WEB_API_VERSION: str = '1.0.0'
@@ -2008,7 +2008,7 @@ class Settings(BaseSettings):
 
     def get_freekassa_sbp_display_name(self) -> str:
         name = (self.FREEKASSA_SBP_DISPLAY_NAME or '').strip()
-        return name if name else 'СБП (QR код)'
+        return name or 'СБП (QR код)'
 
     def get_freekassa_sbp_display_name_html(self) -> str:
         return html.escape(self.get_freekassa_sbp_display_name())
@@ -2018,7 +2018,7 @@ class Settings(BaseSettings):
 
     def get_freekassa_card_display_name(self) -> str:
         name = (self.FREEKASSA_CARD_DISPLAY_NAME or '').strip()
-        return name if name else 'Карта РФ'
+        return name or 'Карта РФ'
 
     def get_freekassa_card_display_name_html(self) -> str:
         return html.escape(self.get_freekassa_card_display_name())
@@ -2053,7 +2053,7 @@ class Settings(BaseSettings):
 
     def get_severpay_display_name(self) -> str:
         name = (self.SEVERPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'SeverPay'
+        return name or 'SeverPay'
 
     def get_severpay_display_name_html(self) -> str:
         return html.escape(self.get_severpay_display_name())
@@ -2063,7 +2063,7 @@ class Settings(BaseSettings):
 
     def get_paypear_display_name(self) -> str:
         name = (self.PAYPEAR_DISPLAY_NAME or '').strip()
-        return name if name else 'PayPear'
+        return name or 'PayPear'
 
     def get_paypear_display_name_html(self) -> str:
         return html.escape(self.get_paypear_display_name())
@@ -2073,7 +2073,7 @@ class Settings(BaseSettings):
 
     def get_rollypay_display_name(self) -> str:
         name = (self.ROLLYPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'RollyPay'
+        return name or 'RollyPay'
 
     def get_rollypay_display_name_html(self) -> str:
         return html.escape(self.get_rollypay_display_name())
@@ -2088,7 +2088,7 @@ class Settings(BaseSettings):
 
     def get_overpay_display_name(self) -> str:
         name = (self.OVERPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'Overpay'
+        return name or 'Overpay'
 
     def get_overpay_display_name_html(self) -> str:
         return html.escape(self.get_overpay_display_name())
@@ -2103,7 +2103,7 @@ class Settings(BaseSettings):
 
     def get_aurapay_display_name(self) -> str:
         name = (self.AURAPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'AuraPay'
+        return name or 'AuraPay'
 
     def get_aurapay_display_name_html(self) -> str:
         return html.escape(self.get_aurapay_display_name())
@@ -2139,7 +2139,7 @@ class Settings(BaseSettings):
 
     def get_antilopay_display_name(self) -> str:
         name = (self.ANTILOPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'Antilopay'
+        return name or 'Antilopay'
 
     def get_antilopay_display_name_html(self) -> str:
         return html.escape(self.get_antilopay_display_name())
@@ -2179,7 +2179,7 @@ class Settings(BaseSettings):
 
     def get_jupiter_display_name(self) -> str:
         name = (self.JUPITER_DISPLAY_NAME or '').strip()
-        return name if name else 'Jupiter'
+        return name or 'Jupiter'
 
     def get_jupiter_display_name_html(self) -> str:
         return html.escape(self.get_jupiter_display_name())
@@ -2199,7 +2199,7 @@ class Settings(BaseSettings):
 
     def get_donut_display_name(self) -> str:
         name = (self.DONUT_DISPLAY_NAME or '').strip()
-        return name if name else 'Donut'
+        return name or 'Donut'
 
     def get_donut_display_name_html(self) -> str:
         return html.escape(self.get_donut_display_name())
@@ -2244,7 +2244,7 @@ class Settings(BaseSettings):
 
     def get_lava_display_name(self) -> str:
         name = (self.LAVA_DISPLAY_NAME or '').strip()
-        return name if name else 'Lava'
+        return name or 'Lava'
 
     def get_lava_display_name_html(self) -> str:
         return html.escape(self.get_lava_display_name())
@@ -2278,7 +2278,7 @@ class Settings(BaseSettings):
 
     def get_etoplatezhi_display_name(self) -> str:
         name = (self.ETOPLATEZHI_DISPLAY_NAME or '').strip()
-        return name if name else 'Etoplatezhi'
+        return name or 'Etoplatezhi'
 
     def get_etoplatezhi_display_name_html(self) -> str:
         return html.escape(self.get_etoplatezhi_display_name())
@@ -2308,7 +2308,7 @@ class Settings(BaseSettings):
 
     def get_kassa_ai_sbp_display_name(self) -> str:
         name = (self.KASSA_AI_SBP_DISPLAY_NAME or '').strip()
-        return name if name else 'СБП (KassaAI)'
+        return name or 'СБП (KassaAI)'
 
     def get_kassa_ai_sbp_display_name_html(self) -> str:
         return html.escape(self.get_kassa_ai_sbp_display_name())
@@ -2318,7 +2318,7 @@ class Settings(BaseSettings):
 
     def get_kassa_ai_card_display_name(self) -> str:
         name = (self.KASSA_AI_CARD_DISPLAY_NAME or '').strip()
-        return name if name else 'Карта (KassaAI)'
+        return name or 'Карта (KassaAI)'
 
     def get_kassa_ai_card_display_name_html(self) -> str:
         return html.escape(self.get_kassa_ai_card_display_name())
@@ -2328,7 +2328,7 @@ class Settings(BaseSettings):
 
     def get_kassa_ai_sberpay_display_name(self) -> str:
         name = (self.KASSA_AI_SBERPAY_DISPLAY_NAME or '').strip()
-        return name if name else 'SberPay (KassaAI)'
+        return name or 'SberPay (KassaAI)'
 
     def get_kassa_ai_sberpay_display_name_html(self) -> str:
         return html.escape(self.get_kassa_ai_sberpay_display_name())
@@ -2911,7 +2911,7 @@ class Settings(BaseSettings):
     def get_web_api_allowed_origins(self) -> list[str]:
         raw = (self.WEB_API_ALLOWED_ORIGINS or '').split(',')
         origins = [origin.strip() for origin in raw if origin.strip()]
-        return origins or ['*']
+        return origins
 
     def get_web_api_docs_config(self) -> dict[str, str | None]:
         if self.WEB_API_DOCS_ENABLED:
@@ -3012,7 +3012,9 @@ class Settings(BaseSettings):
     def get_cabinet_jwt_secret(self) -> str:
         if self.CABINET_JWT_SECRET:
             return self.CABINET_JWT_SECRET
-        return self.BOT_TOKEN
+        if self.CABINET_ENABLED:
+            raise ValueError('CABINET_JWT_SECRET must be configured when the cabinet is enabled')
+        return hashlib.sha256(f'cabinet-jwt:{self.BOT_TOKEN}'.encode()).hexdigest()
 
     def get_cabinet_access_token_expire_minutes(self) -> int:
         return max(1, self.CABINET_ACCESS_TOKEN_EXPIRE_MINUTES)

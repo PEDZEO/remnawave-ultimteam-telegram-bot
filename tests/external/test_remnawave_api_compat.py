@@ -134,3 +134,25 @@ def test_parse_user_accepts_month_rolling_and_number_traffic() -> None:
     assert user.traffic_limit_bytes == 123
     assert user.used_traffic_bytes == 10
     assert user.lifetime_used_traffic_bytes == 20
+
+
+@pytest.mark.parametrize('raw_status', [None, 'FUTURE_PANEL_STATUS'])
+def test_parse_user_fails_closed_for_unknown_status(raw_status: str | None) -> None:
+    api = RemnaWaveAPI('https://panel.example', 'token')
+    now = datetime(2026, 7, 5, tzinfo=UTC).isoformat()
+
+    user = api._parse_user(
+        {
+            'uuid': 'user-uuid',
+            'shortUuid': 'short',
+            'username': 'demo',
+            'status': raw_status,
+            'trafficLimitBytes': 0,
+            'trafficLimitStrategy': 'NO_RESET',
+            'expireAt': now,
+            'createdAt': now,
+            'updatedAt': now,
+        }
+    )
+
+    assert user.status.value == 'DISABLED'

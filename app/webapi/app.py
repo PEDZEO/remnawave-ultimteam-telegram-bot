@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.cabinet.routes import router as cabinet_router
 from app.config import settings
 from app.webapi.docs import add_redoc_endpoint
+from app.webserver.security_headers import install_security_headers
 
 from .middleware import RequestLoggingMiddleware
 from .routes import (
@@ -190,6 +191,7 @@ def create_web_api_app() -> FastAPI:
         openapi_url=docs_config.get('openapi_url'),
         title=settings.WEB_API_TITLE,
     )
+    install_security_headers(app)
 
     allowed_origins = settings.get_web_api_allowed_origins()
     cabinet_origins = settings.get_cabinet_allowed_origins()
@@ -198,7 +200,7 @@ def create_web_api_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=['*'] if '*' in all_origins else all_origins,
-        allow_credentials=True,
+        allow_credentials='*' not in all_origins,
         allow_methods=['*'],
         allow_headers=['*'],
     )

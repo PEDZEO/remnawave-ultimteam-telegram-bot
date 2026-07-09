@@ -625,7 +625,18 @@ async def extend_subscription(
     return subscription
 
 
-async def add_subscription_traffic(db: AsyncSession, subscription: Subscription, gb: int) -> Subscription:
+async def add_subscription_traffic(
+    db: AsyncSession,
+    subscription: Subscription,
+    gb: int,
+    *,
+    commit: bool = True,
+) -> Subscription:
+    if gb <= 0:
+        raise ValueError('Traffic top-up amount must be greater than 0 GB')
+    if subscription.traffic_limit_gb == 0:
+        raise ValueError('Cannot add temporary traffic to an unlimited subscription')
+
     subscription.add_traffic(gb)
     subscription.updated_at = datetime.now(UTC)
 
@@ -659,8 +670,11 @@ async def add_subscription_traffic(db: AsyncSession, subscription: Subscription,
         # Первая докупка
         subscription.traffic_reset_at = new_expires_at
 
-    await db.commit()
-    await db.refresh(subscription)
+    if commit:
+        await db.commit()
+        await db.refresh(subscription)
+    else:
+        await db.flush()
 
     logger.info(
         '📈 К подписке пользователя добавлено ГБ трафика (истекает )',
@@ -819,7 +833,12 @@ async def deactivate_subscription(db: AsyncSession, subscription: Subscription) 
     return subscription
 
 
-async def reactivate_subscription(db: AsyncSession, subscription: Subscription) -> Subscription:
+async def reactivate_subscription(
+    db: AsyncSession,
+    subscription: Subscription,
+    *,
+    commit: bool = True,
+) -> Subscription:
     """Реактивация подписки (например, после повторной подписки на канал или докупки трафика).
 
     Активирует если подписка была DISABLED или EXPIRED и ещё не истекла по времени.
@@ -843,8 +862,11 @@ async def reactivate_subscription(db: AsyncSession, subscription: Subscription) 
     subscription.status = SubscriptionStatus.ACTIVE.value
     subscription.updated_at = now
 
-    await db.commit()
-    await db.refresh(subscription)
+    if commit:
+        await db.commit()
+        await db.refresh(subscription)
+    else:
+        await db.flush()
 
     logger.info(
         '✅ Подписка реактивирована',
@@ -2206,6 +2228,8 @@ async def update_daily_charge_time(
     db: AsyncSession,
     subscription: Subscription,
     charge_time: datetime = None,
+    *,
+    commit: bool = True,
 ) -> Subscription:
     """Обновляет время последнего суточного списания и продлевает подписку на 1 день."""
     now = charge_time or datetime.now(UTC)
@@ -2217,8 +2241,11 @@ async def update_daily_charge_time(
         subscription.end_date = new_end_date
         logger.info('📅 Продлена подписка до', subscription_id=subscription.id, new_end_date=new_end_date)
 
-    await db.commit()
-    await db.refresh(subscription)
+    if commit:
+        await db.commit()
+        await db.refresh(subscription)
+    else:
+        await db.flush()
 
     return subscription
 
@@ -2226,14 +2253,19 @@ async def update_daily_charge_time(
 async def suspend_daily_subscription_insufficient_balance(
     db: AsyncSession,
     subscription: Subscription,
+    *,
+    commit: bool = True,
 ) -> Subscription:
     """
     Приостанавливает подписку из-за недостатка баланса.
     Отличается от pause_daily_subscription тем, что меняет статус на DISABLED.
     """
     subscription.status = SubscriptionStatus.DISABLED.value
-    await db.commit()
-    await db.refresh(subscription)
+    if commit:
+        await db.commit()
+        await db.refresh(subscription)
+    else:
+        await db.flush()
 
     logger.info(
         '⚠️ Суточная подписка приостановлена: недостаточно средств (user_id=)',

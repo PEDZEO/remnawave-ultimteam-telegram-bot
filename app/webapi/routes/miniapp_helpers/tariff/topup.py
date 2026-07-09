@@ -59,6 +59,15 @@ def validate_topup_package(
             },
         )
 
+    if (subscription.traffic_limit_gb or 0) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'unlimited_traffic',
+                'message': 'Cannot add traffic to unlimited subscription',
+            },
+        )
+
     max_topup_limit = getattr(tariff, 'max_topup_traffic_gb', 0) or 0
     if max_topup_limit > 0:
         current_traffic = subscription.traffic_limit_gb or 0
@@ -148,12 +157,13 @@ async def execute_topup_purchase(
         add_subscription_traffic,
         reactivate_subscription,
     )
-    from app.database.crud.transaction import create_transaction
+    from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
     from app.database.crud.user import subtract_user_balance
     from app.database.models import TransactionType
 
-    success = await subtract_user_balance(db, user, final_price, description)
+    success = await subtract_user_balance(db, user, final_price, description, commit=False)
     if not success:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -162,9 +172,27 @@ async def execute_topup_purchase(
             },
         )
 
-    await add_subscription_traffic(db, subscription, package_gb)
+    await add_subscription_traffic(db, subscription, package_gb, commit=False)
     # Reactivate DISABLED/EXPIRED subscriptions after successful top-up.
-    await reactivate_subscription(db, subscription)
+    await reactivate_subscription(db, subscription, commit=False)
+
+    transaction = await create_transaction(
+        db,
+        user_id=user.id,
+        type=TransactionType.SUBSCRIPTION_PAYMENT,
+        amount_kopeks=final_price,
+        description=description,
+        commit=False,
+    )
+    await db.commit()
+    await emit_transaction_side_effects(
+        db,
+        transaction,
+        user_id=user.id,
+        type=TransactionType.SUBSCRIPTION_PAYMENT,
+        amount_kopeks=final_price,
+        description=description,
+    )
 
     try:
         service = SubscriptionService()
@@ -173,11 +201,3 @@ async def execute_topup_purchase(
             await service.enable_remnawave_user(user.remnawave_uuid)
     except Exception as error:
         logger.error('Ошибка синхронизации с RemnaWave при докупке трафика', error=error)
-
-    await create_transaction(
-        db,
-        user_id=user.id,
-        type=TransactionType.SUBSCRIPTION_PAYMENT,
-        amount_kopeks=final_price,
-        description=description,
-    )

@@ -39,11 +39,24 @@ def test_build_preflight_runtime_objects_creates_logger_and_timeline(monkeypatch
     startup_timeline_cls.assert_called_once_with(logger, 'Bedolaga Remnawave Bot')
 
 
+def test_security_settings_require_dedicated_cabinet_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runtime_preflight,
+        'settings',
+        SimpleNamespace(CABINET_ENABLED=True, CABINET_JWT_SECRET=None),
+    )
+
+    with pytest.raises(RuntimeError, match='CABINET_JWT_SECRET'):
+        runtime_preflight._validate_security_settings()
+
+
 @pytest.mark.asyncio
 async def test_prepare_runtime_preflight_logs_banner_from_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = MagicMock()
     timeline = MagicMock()
     telegram_notifier = object()
+    validate_security_settings = MagicMock()
+    monkeypatch.setattr(runtime_preflight, '_validate_security_settings', validate_security_settings)
 
     monkeypatch.setattr(
         runtime_preflight,
@@ -60,6 +73,7 @@ async def test_prepare_runtime_preflight_logs_banner_from_helper(monkeypatch: py
 
     result = await runtime_preflight.prepare_runtime_preflight()
 
+    validate_security_settings.assert_called_once_with()
     configure_runtime_logging.assert_awaited_once_with('file_formatter', 'console_formatter')
     timeline.log_banner.assert_called_once_with(metadata)
     prepare_localizations.assert_awaited_once_with(timeline, logger)

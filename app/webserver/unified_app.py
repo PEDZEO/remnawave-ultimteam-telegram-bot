@@ -15,6 +15,7 @@ from app.services.disposable_email_service import disposable_email_service
 from app.services.payment_service import PaymentService
 from app.webapi.app import create_web_api_app
 from app.webapi.docs import add_redoc_endpoint
+from app.webserver.security_headers import install_security_headers
 
 from . import payments, telegram
 
@@ -70,12 +71,13 @@ def _create_base_app() -> FastAPI:
             app.add_middleware(
                 CORSMiddleware,
                 allow_origins=['*'] if '*' in cabinet_origins else cabinet_origins,
-                allow_credentials=True,
+                allow_credentials='*' not in cabinet_origins,
                 allow_methods=['*'],
                 allow_headers=['*'],
             )
             app.include_router(cabinet_router)
 
+    install_security_headers(app)
     _attach_docs_alias(app, app.docs_url)
     return app
 

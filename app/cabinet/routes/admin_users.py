@@ -511,7 +511,10 @@ async def get_users_stats(
     active_month = (await db.execute(active_month_q)).scalar() or 0
 
     # Count deleted users
-    deleted_q = select(func.count(User.id)).where(User.status == UserStatus.DELETED.value)
+    deleted_q = select(func.count(User.id)).where(
+        User.status == UserStatus.DELETED.value,
+        or_(User.auth_type.is_(None), User.auth_type != 'merged'),
+    )
     deleted_count = (await db.execute(deleted_q)).scalar() or 0
 
     return UsersStatsResponse(
@@ -1229,6 +1232,16 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='traffic_gb parameter is required for add_traffic action',
+            )
+        if request.traffic_gb <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='traffic_gb must be greater than 0',
+            )
+        if subscription.traffic_limit_gb == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Cannot add traffic to unlimited subscription',
             )
 
         from app.database.crud.subscription import add_subscription_traffic, reactivate_subscription
