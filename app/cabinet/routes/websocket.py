@@ -18,6 +18,20 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
+_AUTH_SUBPROTOCOL = 'cabinet-auth'
+
+
+def _get_websocket_credentials(websocket: WebSocket) -> tuple[str | None, str | None]:
+    """Prefer a WebSocket subprotocol so credentials never appear in request URLs."""
+    requested_protocols = [
+        value.strip() for value in websocket.headers.get('sec-websocket-protocol', '').split(',') if value.strip()
+    ]
+    if len(requested_protocols) >= 2 and requested_protocols[0] == _AUTH_SUBPROTOCOL:
+        return requested_protocols[1], _AUTH_SUBPROTOCOL
+
+    # Keep query-token compatibility for older cabinet builds during rolling updates.
+    return websocket.query_params.get('token'), None
+
 
 class CabinetConnectionManager:
     """Менеджер WebSocket подключений для кабинета."""
@@ -162,12 +176,12 @@ async def cabinet_websocket_endpoint(websocket: WebSocket):
     client_host = websocket.client.host if websocket.client else 'unknown'
 
     # Получаем токен из query params
-    token = websocket.query_params.get('token')
+    token, accepted_subprotocol = _get_websocket_credentials(websocket)
 
     if not token:
         logger.debug('Cabinet WS: No token from', client_host=client_host)
         # Принимаем и сразу закрываем с кодом ошибки
-        await websocket.accept()
+        await websocket.accept(subprotocol=accepted_subprotocol)
         await websocket.close(code=1008, reason='Unauthorized: No token')
         return
 
@@ -177,13 +191,13 @@ async def cabinet_websocket_endpoint(websocket: WebSocket):
     if not user_id:
         logger.debug('Cabinet WS: Invalid token from', client_host=client_host)
         # Принимаем и сразу закрываем с кодом ошибки
-        await websocket.accept()
+        await websocket.accept(subprotocol=accepted_subprotocol)
         await websocket.close(code=1008, reason='Unauthorized: Invalid token')
         return
 
     # Принимаем соединение
     try:
-        await websocket.accept()
+        await websocket.accept(subprotocol=accepted_subprotocol)
         logger.debug('Cabinet WS accepted: user_id is_admin', user_id=user_id, is_admin=is_admin)
     except Exception as e:
         logger.error('Cabinet WS: Failed to accept from', client_host=client_host, e=e)
