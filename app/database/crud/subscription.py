@@ -158,8 +158,10 @@ async def create_trial_subscription(
         connected_squads: Список UUID сквадов (если указан, squad_uuid игнорируется)
         tariff_id: ID тарифа (для режима тарифов)
     """
-    duration_days = duration_days or settings.TRIAL_DURATION_DAYS
-    traffic_limit_gb = traffic_limit_gb or settings.TRIAL_TRAFFIC_LIMIT_GB
+    if duration_days is None:
+        duration_days = settings.TRIAL_DURATION_DAYS
+    if traffic_limit_gb is None:
+        traffic_limit_gb = settings.TRIAL_TRAFFIC_LIMIT_GB
     if device_limit is None:
         device_limit = settings.TRIAL_DEVICE_LIMIT
 

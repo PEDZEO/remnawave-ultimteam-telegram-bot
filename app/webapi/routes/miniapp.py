@@ -64,6 +64,7 @@ from app.services.trial_activation_service import (
     revert_trial_activation,
     rollback_trial_subscription_activation,
 )
+from app.services.trial_parameters_service import resolve_trial_parameters
 from app.services.tribute_service import TributeService
 from app.utils.subscription_utils import get_happ_cryptolink_redirect_link
 from app.utils.telegram_webapp import (
@@ -3298,46 +3299,17 @@ async def activate_subscription_trial_endpoint(
     if not settings.is_devices_selection_enabled():
         forced_devices = settings.get_disabled_mode_device_limit()
 
-    # Получаем параметры триала для режима тарифов
-    trial_traffic_limit = None
-    trial_device_limit = forced_devices if forced_devices is not None else settings.TRIAL_DEVICE_LIMIT
-    trial_squads = None
-    tariff_id_for_trial = None
-    trial_duration = None  # None = использовать TRIAL_DURATION_DAYS
-
-    if settings.is_tariffs_mode():
-        try:
-            from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
-
-            trial_tariff = await get_trial_tariff(db)
-
-            if not trial_tariff:
-                trial_tariff_id = settings.get_trial_tariff_id()
-                if trial_tariff_id > 0:
-                    trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                    if trial_tariff and not trial_tariff.is_active:
-                        trial_tariff = None
-
-            if trial_tariff:
-                trial_traffic_limit = trial_tariff.traffic_limit_gb
-                trial_squads = trial_tariff.allowed_squads or []
-                tariff_id_for_trial = trial_tariff.id
-                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-                if tariff_trial_days:
-                    trial_duration = tariff_trial_days
-                logger.info('Miniapp: используем триальный тариф', trial_tariff_name=trial_tariff.name)
-        except Exception as e:
-            logger.error('Ошибка получения триального тарифа', error=e)
+    trial_parameters = await resolve_trial_parameters(db, device_limit_override=forced_devices)
 
     try:
         subscription = await create_trial_subscription(
             db,
             user.id,
-            duration_days=trial_duration,
-            device_limit=trial_device_limit,
-            traffic_limit_gb=trial_traffic_limit,
-            connected_squads=trial_squads,
-            tariff_id=tariff_id_for_trial,
+            duration_days=trial_parameters.duration_days,
+            device_limit=trial_parameters.device_limit,
+            traffic_limit_gb=trial_parameters.traffic_limit_gb,
+            connected_squads=trial_parameters.connected_squads,
+            tariff_id=trial_parameters.tariff_id,
         )
     except Exception as error:  # pragma: no cover - defensive logging
         logger.error('Failed to activate trial subscription for user', user_id=user.id, error=error)

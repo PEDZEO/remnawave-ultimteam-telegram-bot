@@ -283,6 +283,11 @@ class AdminNotificationService:
         charged_amount_kopeks: int | None = None,
     ) -> bool:
         try:
+            trial_duration_days = settings.TRIAL_DURATION_DAYS
+            if subscription.start_date and subscription.end_date:
+                duration_seconds = (subscription.end_date - subscription.start_date).total_seconds()
+                trial_duration_days = max(0, round(duration_seconds / 86400))
+
             await self._record_subscription_event(
                 db,
                 event_type='activation',
@@ -294,8 +299,8 @@ class AdminNotificationService:
                 occurred_at=datetime.now(UTC),
                 extra={
                     'charged_amount_kopeks': charged_amount_kopeks,
-                    'trial_duration_days': settings.TRIAL_DURATION_DAYS,
-                    'traffic_limit_gb': settings.TRIAL_TRAFFIC_LIMIT_GB,
+                    'trial_duration_days': trial_duration_days,
+                    'traffic_limit_gb': subscription.traffic_limit_gb,
                     'device_limit': subscription.device_limit,
                 },
             )
@@ -350,8 +355,8 @@ class AdminNotificationService:
             message_lines.extend(
                 [
                     '⏰ <b>Параметры триала:</b>',
-                    f'📅 Период: {settings.TRIAL_DURATION_DAYS} дней',
-                    f'📊 Трафик: {self._format_traffic(settings.TRIAL_TRAFFIC_LIMIT_GB)}',
+                    f'📅 Период: {trial_duration_days} дней',
+                    f'📊 Трафик: {self._format_traffic(subscription.traffic_limit_gb)}',
                     f'📱 Устройства: {trial_device_limit}',
                     f'🌐 Сервер: {subscription.connected_squads[0] if subscription.connected_squads else "По умолчанию"}',
                 ]

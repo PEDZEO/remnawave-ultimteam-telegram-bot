@@ -47,8 +47,8 @@ async def test_activate_trial_uses_trial_price_for_topup_redirect(
     mock_keyboard = InlineKeyboardMarkup(inline_keyboard=[])
 
     with (
-        patch('app.database.crud.tariff.get_trial_tariff', new=AsyncMock(return_value=None)),
-        patch('app.database.crud.tariff.get_tariff_by_id', new=AsyncMock(return_value=None)),
+        patch('app.services.trial_parameters_service.get_trial_tariff', new=AsyncMock(return_value=None)),
+        patch('app.services.trial_parameters_service.get_tariff_by_id', new=AsyncMock(return_value=None)),
         patch(
             'app.handlers.subscription.purchase.charge_trial_activation_if_required',
             side_effect=error,

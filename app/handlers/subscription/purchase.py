@@ -52,6 +52,7 @@ from app.services.trial_activation_service import (
     revert_trial_activation,
     rollback_trial_subscription_activation,
 )
+from app.services.trial_parameters_service import resolve_trial_parameters
 from app.services.user_cart_service import user_cart_service
 from app.utils.decorators import error_handler
 
@@ -587,34 +588,12 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
         await callback.answer()
         return
 
-    # Получаем параметры триала (из тарифа или из глобальных настроек)
-    trial_days = settings.TRIAL_DURATION_DAYS
-    trial_traffic = settings.TRIAL_TRAFFIC_LIMIT_GB
-    trial_device_limit = settings.TRIAL_DEVICE_LIMIT
-    trial_tariff = None
+    trial_parameters = await resolve_trial_parameters(db)
+    trial_days = trial_parameters.duration_days
+    trial_traffic = trial_parameters.traffic_limit_gb
+    trial_device_limit = trial_parameters.device_limit
+    trial_tariff = trial_parameters.tariff
     trial_server_name = texts.t('TRIAL_SERVER_DEFAULT_NAME', '🎯 Тестовый сервер')
-
-    # Проверяем триальный тариф
-    if settings.is_tariffs_mode():
-        try:
-            from app.database.crud.tariff import get_tariff_by_id as get_tariff, get_trial_tariff
-
-            trial_tariff = await get_trial_tariff(db)
-            if not trial_tariff:
-                trial_tariff_id = settings.get_trial_tariff_id()
-                if trial_tariff_id > 0:
-                    trial_tariff = await get_tariff(db, trial_tariff_id)
-                    if trial_tariff and not trial_tariff.is_active:
-                        trial_tariff = None
-
-            if trial_tariff:
-                trial_traffic = trial_tariff.traffic_limit_gb
-                tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-                if tariff_trial_days:
-                    trial_days = tariff_trial_days
-                logger.info('Показываем триал с тарифом', trial_tariff_name=trial_tariff.name)
-        except Exception as e:
-            logger.error('Ошибка получения триального тарифа', error=e)
 
     try:
         from app.database.crud.server_squad import get_trial_eligible_server_squads
@@ -836,52 +815,16 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
         if not settings.is_devices_selection_enabled():
             forced_devices = settings.get_disabled_mode_device_limit()
 
-        # Проверяем, настроен ли триальный тариф для режима тарифов
-        trial_tariff = None
-        trial_traffic_limit = None
-        trial_device_limit = forced_devices if forced_devices is not None else settings.TRIAL_DEVICE_LIMIT
-        trial_squads = None
-        tariff_id_for_trial = None
-        trial_duration = None  # None = использовать TRIAL_DURATION_DAYS
-
-        if settings.is_tariffs_mode():
-            try:
-                from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
-
-                # Сначала проверяем тариф из БД с флагом is_trial_available
-                trial_tariff = await get_trial_tariff(db)
-
-                # Если не найден в БД, проверяем настройку TRIAL_TARIFF_ID
-                if not trial_tariff:
-                    trial_tariff_id = settings.get_trial_tariff_id()
-                    if trial_tariff_id > 0:
-                        trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                        if trial_tariff and not trial_tariff.is_active:
-                            trial_tariff = None
-
-                if trial_tariff:
-                    trial_traffic_limit = trial_tariff.traffic_limit_gb
-                    trial_squads = trial_tariff.allowed_squads or []
-                    tariff_id_for_trial = trial_tariff.id
-                    tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-                    if tariff_trial_days:
-                        trial_duration = tariff_trial_days
-                    logger.info(
-                        'Используем триальный тариф (ID: )',
-                        trial_tariff_name=trial_tariff.name,
-                        trial_tariff_id=trial_tariff.id,
-                    )
-            except Exception as e:
-                logger.error('Ошибка получения триального тарифа', error=e)
+        trial_parameters = await resolve_trial_parameters(db, device_limit_override=forced_devices)
 
         subscription = await create_trial_subscription(
             db,
             db_user.id,
-            duration_days=trial_duration,
-            device_limit=trial_device_limit,
-            traffic_limit_gb=trial_traffic_limit,
-            connected_squads=trial_squads,
-            tariff_id=tariff_id_for_trial,
+            duration_days=trial_parameters.duration_days,
+            device_limit=trial_parameters.device_limit,
+            traffic_limit_gb=trial_parameters.traffic_limit_gb,
+            connected_squads=trial_parameters.connected_squads,
+            tariff_id=trial_parameters.tariff_id,
         )
 
         await db.refresh(db_user)

@@ -32,6 +32,7 @@ from app.services.subscription_purchase_service import (
     PurchaseValidationError,
 )
 from app.services.subscription_service import SubscriptionService
+from app.services.trial_parameters_service import resolve_trial_parameters
 from app.services.user_cart_service import user_cart_service
 from app.utils.cache import RateLimitCache, cache, cache_key
 from app.utils.pricing_utils import format_period_description
@@ -1030,32 +1031,12 @@ async def get_trial_info(
             reason_unavailable='Trial is not available for your account type',
         )
 
-    duration_days = settings.TRIAL_DURATION_DAYS
-    traffic_limit_gb = settings.TRIAL_TRAFFIC_LIMIT_GB
-    device_limit = settings.TRIAL_DEVICE_LIMIT
+    trial_parameters = await resolve_trial_parameters(db)
+    duration_days = trial_parameters.duration_days
+    traffic_limit_gb = trial_parameters.traffic_limit_gb
+    device_limit = trial_parameters.device_limit
     requires_payment = bool(settings.TRIAL_PAYMENT_ENABLED)
     price_kopeks = settings.TRIAL_ACTIVATION_PRICE if requires_payment else 0
-
-    # Get trial parameters from tariff if configured (same logic as activate_trial)
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
-
-        trial_tariff = await get_trial_tariff(db)
-
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
-
-        if trial_tariff:
-            traffic_limit_gb = trial_tariff.traffic_limit_gb
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                duration_days = tariff_trial_days
-    except Exception as e:
-        logger.error('Error getting trial tariff for info', error=e)
 
     # Check if user already has an active subscription
     if user.subscription:
@@ -1167,53 +1148,17 @@ async def activate_trial(
         )
         logger.info('User paid kopeks for trial activation', user_id=user.id, price_kopeks=price_kopeks)
 
-    # Get trial parameters from tariff if configured (same logic as bot handler)
-    trial_duration = settings.TRIAL_DURATION_DAYS
-    trial_traffic_limit = settings.TRIAL_TRAFFIC_LIMIT_GB
-    trial_device_limit = settings.TRIAL_DEVICE_LIMIT
-    trial_squads = []
-    tariff_id_for_trial = None
-
-    # First check for tariff with is_trial_available flag in DB (set via admin panel)
-    # Then fallback to TRIAL_TARIFF_ID from settings
-    trial_tariff = None
-    try:
-        from app.database.crud.tariff import get_tariff_by_id, get_trial_tariff
-
-        trial_tariff = await get_trial_tariff(db)
-
-        if not trial_tariff:
-            trial_tariff_id = settings.get_trial_tariff_id()
-            if trial_tariff_id > 0:
-                trial_tariff = await get_tariff_by_id(db, trial_tariff_id)
-                if trial_tariff and not trial_tariff.is_active:
-                    trial_tariff = None
-
-        if trial_tariff:
-            trial_traffic_limit = trial_tariff.traffic_limit_gb
-            trial_squads = trial_tariff.allowed_squads or []
-            tariff_id_for_trial = trial_tariff.id
-            tariff_trial_days = getattr(trial_tariff, 'trial_duration_days', None)
-            if tariff_trial_days:
-                trial_duration = tariff_trial_days
-            logger.info(
-                'Using trial tariff (ID: ) with squads',
-                trial_tariff_name=trial_tariff.name,
-                trial_tariff_id=trial_tariff.id,
-                trial_squads=trial_squads,
-            )
-    except Exception as e:
-        logger.error('Error getting trial tariff', error=e)
+    trial_parameters = await resolve_trial_parameters(db)
 
     # Create trial subscription
     subscription = await create_trial_subscription(
         db=db,
         user_id=user.id,
-        duration_days=trial_duration,
-        traffic_limit_gb=trial_traffic_limit,
-        device_limit=trial_device_limit,
-        connected_squads=trial_squads or None,
-        tariff_id=tariff_id_for_trial,
+        duration_days=trial_parameters.duration_days,
+        traffic_limit_gb=trial_parameters.traffic_limit_gb,
+        device_limit=trial_parameters.device_limit,
+        connected_squads=trial_parameters.connected_squads or None,
+        tariff_id=trial_parameters.tariff_id,
     )
 
     logger.info('Trial subscription activated for user', user_id=user.id)
