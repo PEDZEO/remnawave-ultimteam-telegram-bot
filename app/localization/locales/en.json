@@ -1717,7 +1717,7 @@
   "WEBHOOK_SUB_EXPIRES_24H": "🔴 <b>Subscription expires tomorrow!</b>\n\nLess than 24 hours left. Renew your subscription now.",
   "WEBHOOK_SUB_EXPIRED_24H_AGO": "💤 <b>Subscription expired yesterday</b>\n\nYour subscription has ended. Renew now to restore VPN access.",
   "WEBHOOK_SUB_FIRST_CONNECTED": "🎉 <b>First connection!</b>\n\nYou connected to the VPN for the first time. Welcome!",
-  "WEBHOOK_SUB_BANDWIDTH_THRESHOLD": "📊 <b>{percent}% traffic used</b>\n\nYou have used a significant portion of your traffic. Monitor your usage.",
+  "WEBHOOK_SUB_BANDWIDTH_THRESHOLD": "📊 <b>Your traffic is running low</b>\n\nUsed <b>{percent}%</b>: {used_gb} of {limit_gb} GB.\n<b>{remaining_gb} GB</b> remains.\n\nYou can buy more traffic now.",
   "WEBHOOK_RENEW_BUTTON": "🔄 Renew subscription",
   "WEBHOOK_USER_NOT_CONNECTED": "📡 <b>Not connected yet</b>\n\nYour subscription is active but no VPN connection has been made. Connect to start using the service.",
   "WEBHOOK_DEVICE_ADDED": "📱 <b>New device</b>\n\nA new device has been added to your subscription: <code>{device}</code>",

@@ -1,5 +1,6 @@
 """Admin settings routes for cabinet - system configuration management."""
 
+from string import Formatter
 from typing import Any
 
 import structlog
@@ -126,6 +127,35 @@ def _coerce_value(key: str, value: Any) -> Any:
                 status.HTTP_400_BAD_REQUEST,
                 detail=f'Value must be one of: {readable}',
             )
+
+    if key == 'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT' and not 25 <= normalized <= 95:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning percent must be between 25 and 95')
+
+    if key == 'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU':
+        message = str(normalized).strip()
+        if not message:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning message cannot be empty')
+        if len(message) > 4096:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning message is too long')
+
+        allowed_fields = {'percent', 'used_gb', 'limit_gb', 'remaining_gb'}
+        try:
+            parsed_fields: set[str] = set()
+            for _, field_name, format_spec, conversion in Formatter().parse(message):
+                if field_name is None:
+                    continue
+                if format_spec or conversion:
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        'Traffic warning variables cannot use formatting modifiers',
+                    )
+                parsed_fields.add(field_name)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning message has invalid braces') from error
+
+        if parsed_fields - allowed_fields:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning message has unsupported variables')
+        normalized = message
 
     return normalized
 

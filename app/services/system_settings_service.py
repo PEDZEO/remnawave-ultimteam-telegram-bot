@@ -304,6 +304,8 @@ class BotConfigurationService:
         'MAIN_MENU_MODE': 'INTERFACE',
         'CABINET_BUTTON_STYLE': 'INTERFACE',
         'CABINET_ULTIMA_ACCOUNT_LINKING_MODE': 'HAPP',
+        'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT': 'WEBHOOK_NOTIFICATIONS',
+        'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU': 'WEBHOOK_NOTIFICATIONS',
         'CONNECT_BUTTON_MODE': 'CONNECT_BUTTON',
         'MINIAPP_CUSTOM_URL': 'CONNECT_BUTTON',
         'ENABLE_DEEP_LINKS': 'ADDITIONAL',
@@ -1141,6 +1143,25 @@ class BotConfigurationService:
             'description': 'Предупреждение при приближении к лимиту трафика (порог в %).',
             'format': 'Булево значение.',
             'example': 'true',
+        },
+        'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT': {
+            'description': (
+                'Порог предупреждения о заканчивающемся трафике для пользователей, '
+                'которые не выбрали собственный порог в профиле.'
+            ),
+            'format': 'Целое число от 25 до 95.',
+            'example': '80',
+            'warning': (
+                'В Remnawave должны быть включены bandwidth-уведомления и настроен такой же либо более ранний порог.'
+            ),
+            'dependencies': 'Remnawave webhook user.bandwidth_usage_threshold_reached',
+        },
+        'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU': {
+            'description': 'Русский текст предупреждения о заканчивающемся трафике.',
+            'format': ('Telegram HTML. Доступны переменные {percent}, {used_gb}, {limit_gb}, {remaining_gb}.'),
+            'example': '📊 <b>Трафик почти закончился</b>\\nОсталось {remaining_gb} ГБ.',
+            'warning': 'Не удаляйте фигурные скобки у используемых переменных.',
+            'dependencies': 'WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD',
         },
         'WEBHOOK_NOTIFY_DEVICES': {
             'description': 'Уведомления о подключении и отключении устройств.',

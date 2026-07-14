@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD: bool = True
     WEBHOOK_NOTIFY_DEVICES: bool = True
 
+    # Ultima traffic warning shown for Remnawave bandwidth threshold webhooks.
+    ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT: int = 80
+    ULTIMA_TRAFFIC_WARNING_MESSAGE_RU: str = (
+        '📊 <b>Трафик почти закончился</b>\n\n'
+        'Использовано <b>{percent}%</b>: {used_gb} из {limit_gb} ГБ.\n'
+        'Осталось <b>{remaining_gb} ГБ</b>.\n\n'
+        'Докупить трафик можно сейчас — дополнительный пакет будет действовать 30 дней.'
+    )
+
     TRIAL_DURATION_DAYS: int = 3
     TRIAL_TRAFFIC_LIMIT_GB: int = 10
     TRIAL_DEVICE_LIMIT: int = 2

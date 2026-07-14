@@ -1600,7 +1600,7 @@
 "WEBHOOK_SUB_EXPIRES_24H": "🔴 <b>订阅明天到期！</b>\n\n不到24小时。请立即续订。",
 "WEBHOOK_SUB_EXPIRED_24H_AGO": "💤 <b>订阅昨天已过期</b>\n\n您的订阅已结束。请立即续订以恢复VPN访问。",
 "WEBHOOK_SUB_FIRST_CONNECTED": "🎉 <b>首次连接！</b>\n\n您首次连接了VPN。欢迎！",
-"WEBHOOK_SUB_BANDWIDTH_THRESHOLD": "📊 <b>已使用{percent}%流量</b>\n\n您已使用了大部分流量。请注意使用量。",
+"WEBHOOK_SUB_BANDWIDTH_THRESHOLD": "📊 <b>流量即将用完</b>\n\n已使用 <b>{percent}%</b>：{used_gb}/{limit_gb} GB。\n剩余 <b>{remaining_gb} GB</b>。\n\n您现在可以购买更多流量。",
 "WEBHOOK_RENEW_BUTTON": "🔄 续订订阅",
 "WEBHOOK_USER_NOT_CONNECTED": "📡 <b>尚未连接</b>\n\n您的订阅已激活，但尚未建立VPN连接。请连接以开始使用服务。",
 "WEBHOOK_DEVICE_ADDED": "📱 <b>新设备</b>\n\n您的订阅已添加新设备：<code>{device}</code>",

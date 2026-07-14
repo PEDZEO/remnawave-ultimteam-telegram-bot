@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings as app_settings
 from app.database.models import User
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
@@ -40,7 +41,7 @@ class NotificationSettingsUpdate(BaseModel):
     subscription_expiry_enabled: bool | None = None
     subscription_expiry_days: int | None = Field(None, ge=1, le=30)
     traffic_warning_enabled: bool | None = None
-    traffic_warning_percent: int | None = Field(None, ge=50, le=99)
+    traffic_warning_percent: int | None = Field(None, ge=25, le=95)
     balance_low_enabled: bool | None = None
     balance_low_threshold: int | None = Field(None, ge=0)
     news_enabled: bool | None = None
@@ -59,7 +60,10 @@ def _get_notification_settings(user: User) -> dict[str, Any]:
         'subscription_expiry_enabled': settings_data.get('subscription_expiry_enabled', True),
         'subscription_expiry_days': settings_data.get('subscription_expiry_days', 3),
         'traffic_warning_enabled': settings_data.get('traffic_warning_enabled', True),
-        'traffic_warning_percent': settings_data.get('traffic_warning_percent', 80),
+        'traffic_warning_percent': settings_data.get(
+            'traffic_warning_percent',
+            app_settings.ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT,
+        ),
         'balance_low_enabled': settings_data.get('balance_low_enabled', True),
         'balance_low_threshold': settings_data.get('balance_low_threshold', 100),
         'news_enabled': settings_data.get('news_enabled', True),

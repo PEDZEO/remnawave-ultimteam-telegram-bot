@@ -402,6 +402,107 @@ class RemnaWaveWebhookService:
             ]
         )
 
+    @staticmethod
+    def _coerce_non_negative_number(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None
+
+    @staticmethod
+    def _format_gb(value: float) -> str:
+        return f'{value:.2f}'.rstrip('0').rstrip('.')
+
+    @classmethod
+    def _build_traffic_warning_context(
+        cls,
+        data: dict[str, Any],
+        subscription: Subscription | None,
+    ) -> dict[str, Any] | None:
+        nested_user = data.get('user') if isinstance(data.get('user'), dict) else {}
+        user_traffic = data.get('userTraffic') if isinstance(data.get('userTraffic'), dict) else {}
+        if not user_traffic and isinstance(nested_user.get('userTraffic'), dict):
+            user_traffic = nested_user['userTraffic']
+
+        used_bytes = next(
+            (
+                value
+                for value in (
+                    cls._coerce_non_negative_number(data.get('usedTrafficBytes')),
+                    cls._coerce_non_negative_number(data.get('used_traffic_bytes')),
+                    cls._coerce_non_negative_number(user_traffic.get('usedTrafficBytes')),
+                    cls._coerce_non_negative_number(user_traffic.get('used_traffic_bytes')),
+                    cls._coerce_non_negative_number(nested_user.get('usedTrafficBytes')),
+                )
+                if value is not None
+            ),
+            None,
+        )
+        limit_bytes = next(
+            (
+                value
+                for value in (
+                    cls._coerce_non_negative_number(data.get('trafficLimitBytes')),
+                    cls._coerce_non_negative_number(data.get('traffic_limit_bytes')),
+                    cls._coerce_non_negative_number(nested_user.get('trafficLimitBytes')),
+                )
+                if value is not None
+            ),
+            None,
+        )
+
+        bytes_per_gb = 1024**3
+        payload_used_gb = used_bytes / bytes_per_gb if used_bytes is not None else None
+        payload_limit_gb = limit_bytes / bytes_per_gb if limit_bytes is not None else None
+        used_gb = payload_used_gb
+        limit_gb = payload_limit_gb
+
+        if used_gb is None and subscription is not None:
+            used_gb = cls._coerce_non_negative_number(getattr(subscription, 'traffic_used_gb', None))
+        if limit_gb is None and subscription is not None:
+            limit_gb = cls._coerce_non_negative_number(getattr(subscription, 'traffic_limit_gb', None))
+
+        meta = data.get('meta') if isinstance(data.get('meta'), dict) else {}
+        explicit_percent = next(
+            (
+                value
+                for value in (
+                    cls._coerce_non_negative_number(data.get('thresholdPercent')),
+                    cls._coerce_non_negative_number(data.get('threshold')),
+                    cls._coerce_non_negative_number(meta.get('thresholdPercent')),
+                )
+                if value is not None
+            ),
+            None,
+        )
+
+        actual_percent: float | None = None
+        if payload_limit_gb and payload_used_gb is not None:
+            actual_percent = min(100.0, max(0.0, payload_used_gb / payload_limit_gb * 100))
+        elif explicit_percent is not None:
+            actual_percent = min(100.0, explicit_percent)
+        elif limit_gb and used_gb is not None:
+            actual_percent = min(100.0, max(0.0, used_gb / limit_gb * 100))
+
+        if actual_percent is None:
+            return None
+
+        used_gb = used_gb or 0.0
+        limit_gb = limit_gb or 0.0
+        remaining_gb = max(0.0, limit_gb - used_gb)
+        display_percent = round(actual_percent, 1)
+
+        return {
+            'actual_percent': actual_percent,
+            'used_gb_value': used_gb,
+            'limit_gb_value': limit_gb,
+            'percent': cls._format_gb(display_percent),
+            'used_gb': cls._format_gb(used_gb),
+            'limit_gb': cls._format_gb(limit_gb),
+            'remaining_gb': cls._format_gb(remaining_gb),
+        }
+
     async def _notify_user(
         self,
         user: User,
@@ -409,6 +510,7 @@ class RemnaWaveWebhookService:
         *,
         reply_markup: InlineKeyboardMarkup | None = None,
         format_kwargs: dict[str, Any] | None = None,
+        message_override: str | None = None,
     ) -> None:
         """Send a notification to user via appropriate channel.
 
@@ -429,17 +531,27 @@ class RemnaWaveWebhookService:
             return
 
         texts = get_texts(user.language)
-        message = texts.get(text_key)
-        if not message:
+        default_message = texts.get(text_key)
+        if not default_message:
             logger.warning('Missing locale key for language', text_key=text_key, language=user.language)
             return
+
+        message = message_override.strip() if message_override and message_override.strip() else default_message
 
         if format_kwargs:
             try:
                 message = message.format(**format_kwargs)
-            except (KeyError, IndexError):
-                logger.warning('Failed to format message with kwargs', text_key=text_key, format_kwargs=format_kwargs)
-                return
+            except (KeyError, IndexError, ValueError):
+                logger.warning(
+                    'Failed to format custom message, using locale default',
+                    text_key=text_key,
+                    format_kwargs=format_kwargs,
+                )
+                try:
+                    message = default_message.format(**format_kwargs)
+                except (KeyError, IndexError, ValueError):
+                    logger.warning('Failed to format locale message with kwargs', text_key=text_key)
+                    return
 
         # Append "Close" button to every webhook notification keyboard
         close_text = texts.get('WEBHOOK_CLOSE_BUTTON', '✖️ Закрыть')
@@ -798,22 +910,51 @@ class RemnaWaveWebhookService:
     async def _handle_bandwidth_threshold(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
     ) -> None:
-        # Extract threshold percentage from meta or data
-        percent = data.get('thresholdPercent') or data.get('threshold', '')
-        if not percent:
-            # Try to extract from meta
-            meta = data.get('meta', {})
-            if isinstance(meta, dict):
-                percent = meta.get('thresholdPercent', '80')
+        notification_settings = (
+            user.notification_settings if isinstance(getattr(user, 'notification_settings', None), dict) else {}
+        )
+        if notification_settings.get('traffic_warning_enabled') is False:
+            logger.debug('Traffic warning disabled by user', user_id=user.id)
+            return
 
-        # Sanitize to numeric value only (prevent format string injection)
-        percent_str = re.sub(r'[^\d.]', '', str(percent)) or '80'
+        context = self._build_traffic_warning_context(data, subscription)
+        if context is None:
+            logger.warning('Traffic warning webhook has no usable traffic values', user_id=user.id)
+            return
+
+        default_percent = max(25, min(95, int(settings.ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT)))
+        try:
+            user_percent = int(notification_settings.get('traffic_warning_percent', default_percent))
+        except (TypeError, ValueError):
+            user_percent = default_percent
+        user_percent = max(25, min(95, user_percent))
+
+        if context['actual_percent'] < user_percent:
+            logger.debug(
+                'Traffic warning below user threshold',
+                user_id=user.id,
+                actual_percent=context['actual_percent'],
+                user_percent=user_percent,
+            )
+            return
+
+        if subscription is not None:
+            subscription.traffic_used_gb = context['used_gb_value']
+            if context['limit_gb_value'] > 0:
+                subscription.traffic_limit_gb = round(context['limit_gb_value'])
+            await db.commit()
+
+        format_kwargs = {key: context[key] for key in ('percent', 'used_gb', 'limit_gb', 'remaining_gb')}
+        custom_message = None
+        if str(user.language or '').lower().startswith('ru'):
+            custom_message = settings.ULTIMA_TRAFFIC_WARNING_MESSAGE_RU
 
         await self._notify_user(
             user,
             'WEBHOOK_SUB_BANDWIDTH_THRESHOLD',
             reply_markup=self._get_traffic_keyboard(user),
-            format_kwargs={'percent': percent_str},
+            format_kwargs=format_kwargs,
+            message_override=custom_message,
         )
 
     async def _handle_user_not_connected(

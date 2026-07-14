@@ -52,3 +52,12 @@ def test_referral_settings_are_grouped_with_russian_hints() -> None:
     for key in referral_keys:
         assert BotConfigurationService.get_definition(key).category_key == 'REFERRAL'
         assert BotConfigurationService.SETTING_HINTS[key]['description']
+
+
+def test_ultima_traffic_warning_settings_are_grouped_with_webhook_notifications() -> None:
+    for key in (
+        'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT',
+        'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU',
+    ):
+        assert BotConfigurationService.CATEGORY_KEY_OVERRIDES[key] == 'WEBHOOK_NOTIFICATIONS'
+        assert BotConfigurationService.SETTING_HINTS[key]['description']

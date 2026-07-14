@@ -20,7 +20,7 @@ CALLBACK_TO_CABINET_PATH: dict[str, str] = {
     'subscription_resume_checkout': '/subscription',
     'return_to_saved_cart': '/subscription',
     'menu_buy': '/subscription',
-    'buy_traffic': '/subscription',
+    'buy_traffic': '/subscription?trafficTopUp=1#ultima-traffic-top-up',
     'menu_referrals': '/referral',
     'menu_referral': '/referral',
     'menu_promocode': '/balance',
