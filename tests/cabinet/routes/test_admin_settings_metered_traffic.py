@@ -1,4 +1,5 @@
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -6,7 +7,10 @@ import pytest
 from fastapi import HTTPException
 
 from app.cabinet.routes import admin_settings
-from app.cabinet.routes.admin_settings import MeteredTrafficConfigurationUpdate
+from app.cabinet.routes.admin_settings import (
+    MeteredTrafficConfigurationUpdate,
+    _serialize_exhausted_subscription,
+)
 
 
 SQUAD_UUID = '11111111-1111-1111-1111-111111111111'
@@ -48,6 +52,37 @@ def _payload(**overrides: Any) -> MeteredTrafficConfigurationUpdate:
     }
     values.update(overrides)
     return MeteredTrafficConfigurationUpdate(**values)
+
+
+def test_exhausted_subscription_payload_contains_admin_action_context() -> None:
+    now = datetime.now(UTC)
+    subscription = SimpleNamespace(
+        id=22,
+        user=SimpleNamespace(
+            id=142,
+            telegram_id=123456,
+            username='pedzeo',
+            email='admin@example.com',
+            full_name='Admin User',
+        ),
+        tariff=SimpleNamespace(name='Стандарт + LTE'),
+        traffic_limit_gb=35,
+        traffic_used_gb=35.25,
+        purchased_traffic_gb=10,
+        metered_access_blocked_at=now,
+        metered_traffic_last_checked_at=now,
+        end_date=now + timedelta(days=20),
+    )
+
+    payload = _serialize_exhausted_subscription(subscription)
+
+    assert payload.user_id == 142
+    assert payload.subscription_id == 22
+    assert payload.tariff_name == 'Стандарт + LTE'
+    assert payload.traffic_limit_gb == 35
+    assert payload.traffic_used_gb == 35.25
+    assert payload.purchased_traffic_gb == 10
+    assert payload.blocked_at == now
 
 
 @pytest.mark.asyncio

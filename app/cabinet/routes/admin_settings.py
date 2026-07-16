@@ -1,6 +1,7 @@
 """Admin settings routes for cabinet - system configuration management."""
 
 from dataclasses import asdict
+from datetime import UTC, datetime
 from string import Formatter
 from typing import Any
 from uuid import UUID
@@ -8,8 +9,9 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database.models import Subscription, User
 from app.services.metered_traffic_service import metered_traffic_service
@@ -95,6 +97,30 @@ class MeteredTrafficConfigurationUpdate(BaseModel):
     warning_percent: int = Field(ge=25, le=95)
     server_label: str = Field(min_length=1, max_length=40)
     exhausted_message_ru: str = Field(min_length=1, max_length=4096)
+
+
+class MeteredTrafficExhaustedUser(BaseModel):
+    user_id: int
+    subscription_id: int
+    telegram_id: int | None = None
+    username: str | None = None
+    email: str | None = None
+    full_name: str
+    tariff_name: str | None = None
+    traffic_limit_gb: int
+    traffic_used_gb: float
+    purchased_traffic_gb: int
+    blocked_at: datetime | None = None
+    last_checked_at: datetime | None = None
+    subscription_end_date: datetime
+
+
+class MeteredTrafficExhaustedUsersResponse(BaseModel):
+    items: list[MeteredTrafficExhaustedUser]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 # ============ Helper Functions ============
@@ -264,6 +290,26 @@ def _serialize_metered_squad(squad: Any) -> dict[str, Any]:
     }
 
 
+def _serialize_exhausted_subscription(subscription: Subscription) -> MeteredTrafficExhaustedUser:
+    user = subscription.user
+    tariff = subscription.tariff
+    return MeteredTrafficExhaustedUser(
+        user_id=user.id,
+        subscription_id=subscription.id,
+        telegram_id=user.telegram_id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        tariff_name=tariff.name if tariff else None,
+        traffic_limit_gb=max(0, int(subscription.traffic_limit_gb or 0)),
+        traffic_used_gb=max(0.0, float(subscription.traffic_used_gb or 0.0)),
+        purchased_traffic_gb=max(0, int(subscription.purchased_traffic_gb or 0)),
+        blocked_at=subscription.metered_access_blocked_at,
+        last_checked_at=subscription.metered_traffic_last_checked_at,
+        subscription_end_date=subscription.end_date,
+    )
+
+
 def _serialize_metered_node(node: Any) -> dict[str, Any]:
     return {
         'uuid': node.uuid,
@@ -410,6 +456,60 @@ async def get_metered_traffic_status(
 ):
     """Return runtime state and subscription counters for split traffic mode."""
     return await _metered_status_payload(db)
+
+
+@router.get('/metered-traffic/exhausted-users', response_model=MeteredTrafficExhaustedUsersResponse)
+async def get_metered_traffic_exhausted_users(
+    search: str | None = Query(default=None, max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    admin: User = Depends(require_permission('users:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+) -> MeteredTrafficExhaustedUsersResponse:
+    """Return active subscriptions that lost access to metered special servers."""
+    filters = [
+        Subscription.metered_access_blocked.is_(True),
+        Subscription.status.in_(['active', 'trial']),
+        Subscription.end_date > datetime.now(UTC),
+        User.status == 'active',
+    ]
+    normalized_search = (search or '').strip()
+    if normalized_search:
+        pattern = f'%{normalized_search}%'
+        filters.append(
+            or_(
+                User.username.ilike(pattern),
+                User.email.ilike(pattern),
+                User.first_name.ilike(pattern),
+                User.last_name.ilike(pattern),
+                cast(User.telegram_id, String).ilike(pattern),
+            )
+        )
+
+    total = int(
+        await db.scalar(select(func.count(Subscription.id)).join(User, User.id == Subscription.user_id).where(*filters))
+        or 0
+    )
+    pages = max(1, (total + page_size - 1) // page_size)
+    safe_page = min(page, pages)
+
+    result = await db.execute(
+        select(Subscription)
+        .join(User, User.id == Subscription.user_id)
+        .options(selectinload(Subscription.user), selectinload(Subscription.tariff))
+        .where(*filters)
+        .order_by(Subscription.metered_access_blocked_at.desc().nullslast(), Subscription.id.desc())
+        .offset((safe_page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = [_serialize_exhausted_subscription(subscription) for subscription in result.scalars().all()]
+    return MeteredTrafficExhaustedUsersResponse(
+        items=items,
+        total=total,
+        page=safe_page,
+        page_size=page_size,
+        pages=pages,
+    )
 
 
 @router.get('/metered-traffic/configuration')

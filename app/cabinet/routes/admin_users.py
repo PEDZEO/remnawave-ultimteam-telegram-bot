@@ -232,6 +232,10 @@ async def _sync_subscription_to_panel(
     """
     try:
         from app.external.remnawave_api import TrafficLimitStrategy, UserStatus as PanelUserStatus
+        from app.services.metered_traffic_policy import (
+            is_metered_traffic_enabled,
+            panel_traffic_limit_bytes,
+        )
         from app.services.remnawave_service import RemnaWaveService
         from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
 
@@ -268,7 +272,7 @@ async def _sync_subscription_to_panel(
         )
 
         hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
-        traffic_limit_bytes = subscription.traffic_limit_gb * (1024**3) if subscription.traffic_limit_gb > 0 else 0
+        traffic_limit_bytes = panel_traffic_limit_bytes(subscription.traffic_limit_gb)
 
         changes = {}
         async with service.get_api_client() as api:
@@ -309,8 +313,8 @@ async def _sync_subscription_to_panel(
                 }
                 if expire_at:
                     update_kwargs['expire_at'] = expire_at
-                if subscription.connected_squads:
-                    update_kwargs['active_internal_squads'] = subscription.connected_squads
+                if subscription.connected_squads or is_metered_traffic_enabled():
+                    update_kwargs['active_internal_squads'] = subscription.connected_squads or []
                 if hwid_limit is not None:
                     update_kwargs['hwid_device_limit'] = hwid_limit
 
@@ -1249,11 +1253,22 @@ async def update_user_subscription(
         await reactivate_subscription(db, subscription)
         await db.refresh(subscription)
 
+        # Возвращаем только технический squad: общий Remnawave-лимит в режиме
+        # раздельного трафика остаётся безлимитным для обычных серверов.
+        from app.services.metered_traffic_policy import restore_metered_access_if_available
+
+        if restore_metered_access_if_available(subscription):
+            await db.commit()
+            await db.refresh(subscription)
+
         # Sync to Remnawave panel
         await _sync_subscription_to_panel(db, user, subscription)
 
         # Явно включаем пользователя на панели (PATCH может не снять LIMITED-статус)
-        if getattr(user, 'remnawave_uuid', None) and subscription.status == 'active':
+        if getattr(user, 'remnawave_uuid', None) and subscription.status in (
+            SubscriptionStatus.ACTIVE.value,
+            SubscriptionStatus.TRIAL.value,
+        ):
             from app.services.subscription_service import SubscriptionService
 
             subscription_service = SubscriptionService()
