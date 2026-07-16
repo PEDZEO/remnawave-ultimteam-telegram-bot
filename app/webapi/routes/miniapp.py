@@ -2341,6 +2341,9 @@ async def _resolve_connected_servers(
     db: AsyncSession,
     squad_uuids: list[str],
 ) -> list[MiniAppConnectedServer]:
+    from app.services.metered_traffic_policy import get_customer_squad_uuids
+
+    squad_uuids = get_customer_squad_uuids(squad_uuids)
     if not squad_uuids:
         return []
 
@@ -2948,7 +2951,9 @@ async def get_subscription_details(
         subscription_url = links_payload.get('subscription_url') or subscription.subscription_url
         subscription_crypto_link = links_payload.get('happ_crypto_link') or subscription.subscription_crypto_link
         happ_redirect_link = get_happ_cryptolink_redirect_link(subscription_crypto_link)
-        connected_squads = list(subscription.connected_squads or [])
+        from app.services.metered_traffic_policy import get_customer_squad_uuids
+
+        connected_squads = get_customer_squad_uuids(subscription.connected_squads)
         connected_servers = await resolve_connected_servers(db, connected_squads)
         links = links_payload.get('links') or connected_squads
         ss_conf_links = links_payload.get('ss_conf_links') or {}

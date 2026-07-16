@@ -20,7 +20,12 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
-from app.services.metered_traffic_policy import BYTES_PER_GB, is_metered_traffic_enabled
+from app.services.metered_traffic_policy import (
+    BYTES_PER_GB,
+    get_customer_squad_uuids,
+    is_metered_traffic_enabled,
+    preserve_metered_squad,
+)
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -145,7 +150,7 @@ async def get_subscription(
 
     # Fetch server names for connected squads
     servers: list[ServerInfo] = []
-    connected_squads = fresh_user.subscription.connected_squads or []
+    connected_squads = get_customer_squad_uuids(fresh_user.subscription.connected_squads)
     if connected_squads:
         result = await db.execute(select(ServerSquad).where(ServerSquad.squad_uuid.in_(connected_squads)))
         server_squads = result.scalars().all()
@@ -1212,9 +1217,10 @@ async def _build_tariff_response(
     servers = []
     servers_count = 0
 
-    if tariff.allowed_squads:
-        servers_count = len(tariff.allowed_squads)
-        for squad_uuid in tariff.allowed_squads[:5]:  # Limit for preview
+    customer_squads = get_customer_squad_uuids(tariff.allowed_squads)
+    if customer_squads:
+        servers_count = len(customer_squads)
+        for squad_uuid in customer_squads[:5]:  # Limit for preview
             server = await get_server_squad_by_uuid(db, squad_uuid)
             if server:
                 servers.append(
@@ -2667,7 +2673,7 @@ async def get_available_countries(
     connected_squads = []
     days_left = 0
     if user.subscription:
-        connected_squads = user.subscription.connected_squads or []
+        connected_squads = get_customer_squad_uuids(user.subscription.connected_squads)
         # Calculate days left for prorated pricing
         if user.subscription.end_date:
             delta = user.subscription.end_date - datetime.now(UTC)
@@ -2757,7 +2763,7 @@ async def update_countries(
             detail='At least one country must be selected',
         )
 
-    current_countries = user.subscription.connected_squads or []
+    current_countries = get_customer_squad_uuids(user.subscription.connected_squads)
     promo_group_id = user.promo_group_id
 
     # Exclude trial-only servers from available servers for purchase
@@ -2851,7 +2857,10 @@ async def update_countries(
                 logger.error('Ошибка обновления счётчика серверов', error=e)
 
     # Update connected squads
-    user.subscription.connected_squads = selected_countries
+    user.subscription.connected_squads = preserve_metered_squad(
+        user.subscription.connected_squads,
+        selected_countries,
+    )
     user.subscription.updated_at = datetime.now(UTC)
     await db.commit()
 
@@ -2872,7 +2881,7 @@ async def update_countries(
         'added': added_names,
         'removed': removed_names,
         'amount_paid_kopeks': total_cost,
-        'connected_squads': user.subscription.connected_squads,
+        'connected_squads': get_customer_squad_uuids(user.subscription.connected_squads),
     }
 
 

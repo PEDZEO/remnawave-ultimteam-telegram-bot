@@ -17,6 +17,7 @@ from app.keyboards.inline import (
     get_manage_countries_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.metered_traffic_policy import get_customer_squad_uuids, preserve_metered_squad
 from app.services.subscription_checkout_service import (
     save_subscription_checkout_draft,
     should_offer_checkout_resume,
@@ -56,7 +57,7 @@ async def handle_add_countries(callback: types.CallbackQuery, db_user: User, db:
         return
 
     countries = await _get_available_countries(db_user.promo_group_id)
-    current_countries = subscription.connected_squads
+    current_countries = get_customer_squad_uuids(subscription.connected_squads)
 
     period_hint_days = _get_period_hint_from_subscription(subscription)
     servers_discount_percent = _get_addon_discount_percent_for_user(
@@ -167,7 +168,7 @@ async def handle_manage_country(callback: types.CallbackQuery, db_user: User, db
         return
 
     data = await state.get_data()
-    current_selected = data.get('countries', subscription.connected_squads.copy())
+    current_selected = data.get('countries', get_customer_squad_uuids(subscription.connected_squads))
 
     countries = await _get_available_countries(db_user.promo_group_id)
     allowed_country_ids = {country['uuid'] for country in countries}
@@ -206,7 +207,7 @@ async def handle_manage_country(callback: types.CallbackQuery, db_user: User, db
             reply_markup=get_manage_countries_keyboard(
                 countries,
                 current_selected,
-                subscription.connected_squads,
+                get_customer_squad_uuids(subscription.connected_squads),
                 db_user.language,
                 subscription.end_date,
                 servers_discount_percent,
@@ -231,7 +232,7 @@ async def apply_countries_changes(callback: types.CallbackQuery, db_user: User, 
     subscription = db_user.subscription
 
     selected_countries = data.get('countries', [])
-    current_countries = subscription.connected_squads
+    current_countries = get_customer_squad_uuids(subscription.connected_squads)
 
     countries = await _get_available_countries(db_user.promo_group_id)
     allowed_country_ids = {country['uuid'] for country in countries}
@@ -383,7 +384,10 @@ async def apply_countries_changes(callback: types.CallbackQuery, db_user: User, 
                     value=list(zip(added_server_ids, added_server_prices, strict=False)),
                 )
 
-        subscription.connected_squads = selected_countries
+        subscription.connected_squads = preserve_metered_squad(
+            subscription.connected_squads,
+            selected_countries,
+        )
         subscription.updated_at = datetime.now(UTC)
         await db.commit()
 
@@ -731,7 +735,7 @@ async def handle_add_country_to_subscription(
             reply_markup=get_manage_countries_keyboard(
                 countries,
                 selected_countries,
-                subscription.connected_squads,
+                get_customer_squad_uuids(subscription.connected_squads),
                 db_user.language,
                 subscription.end_date,
                 servers_discount_percent,
@@ -786,7 +790,7 @@ async def confirm_add_countries_to_subscription(
     subscription = db_user.subscription
 
     selected_countries = data.get('countries', [])
-    current_countries = subscription.connected_squads
+    current_countries = get_customer_squad_uuids(subscription.connected_squads)
 
     countries = await _get_available_countries(db_user.promo_group_id)
     allowed_country_ids = {country['uuid'] for country in countries}
@@ -900,7 +904,10 @@ async def confirm_add_countries_to_subscription(
                 description=f'Добавление стран к подписке: {", ".join(new_countries_names)}',
             )
 
-        subscription.connected_squads = selected_countries
+        subscription.connected_squads = preserve_metered_squad(
+            subscription.connected_squads,
+            selected_countries,
+        )
         subscription.updated_at = datetime.now(UTC)
         await db.commit()
 

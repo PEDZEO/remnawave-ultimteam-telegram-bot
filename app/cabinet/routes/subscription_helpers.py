@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import settings
 from app.database.models import Subscription, User
-from app.services.metered_traffic_policy import is_metered_traffic_enabled
+from app.services.metered_traffic_policy import get_customer_squad_uuids, is_metered_traffic_enabled
 
 from ..schemas.subscription import ServerInfo, SubscriptionData, SubscriptionResponse
 
@@ -165,8 +165,12 @@ def subscription_to_response(
         traffic_used_gb=round(traffic_used_gb, 2),
         traffic_used_percent=round(traffic_used_percent, 1),
         device_limit=subscription.device_limit or 0,
-        connected_squads=subscription.connected_squads or [],
-        servers=servers or [],
+        connected_squads=get_customer_squad_uuids(subscription.connected_squads),
+        servers=[
+            server
+            for server in (servers or [])
+            if server.uuid in get_customer_squad_uuids(subscription.connected_squads)
+        ],
         autopay_enabled=subscription.autopay_enabled or False,
         autopay_days_before=subscription.autopay_days_before or 3,
         subscription_url=subscription.subscription_url,

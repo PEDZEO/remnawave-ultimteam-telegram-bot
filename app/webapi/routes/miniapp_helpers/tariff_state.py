@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.tariff import get_tariff_by_id
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.webapi.schemas.miniapp import MiniAppCurrentTariff, MiniAppTrafficTopupPackage
 
 from ..miniapp_format_helpers import format_traffic_limit_label
@@ -36,7 +37,7 @@ async def get_current_tariff_model(db: AsyncSession, subscription, user=None) ->
     if not tariff:
         return None
 
-    servers_count = len(tariff.allowed_squads) if tariff.allowed_squads else 0
+    servers_count = len(get_customer_squad_uuids(tariff.allowed_squads))
 
     # Получаем скидку на трафик из промогруппы
     traffic_discount_percent = 0
@@ -135,7 +136,7 @@ async def get_current_tariff_model(db: AsyncSession, subscription, user=None) ->
 
 async def build_current_tariff_model(db: AsyncSession, tariff, promo_group=None) -> MiniAppCurrentTariff:
     """Создаёт модель текущего тарифа."""
-    servers_count = len(tariff.allowed_squads) if tariff.allowed_squads else 0
+    servers_count = len(get_customer_squad_uuids(tariff.allowed_squads))
     monthly_price = get_tariff_monthly_price(tariff)
 
     # Применяем скидку промогруппы для 30-дневного периода

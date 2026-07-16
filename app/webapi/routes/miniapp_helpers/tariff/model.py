@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.server_squad import get_server_squad_by_uuid
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import format_period_description
 from app.webapi.routes.miniapp_format_helpers import format_traffic_limit_label
 from app.webapi.schemas.miniapp import (
@@ -27,9 +28,10 @@ async def build_tariff_model(
     servers: list[MiniAppConnectedServer] = []
     servers_count = 0
 
-    if tariff.allowed_squads:
-        servers_count = len(tariff.allowed_squads)
-        for squad_uuid in tariff.allowed_squads[:5]:
+    customer_squads = get_customer_squad_uuids(tariff.allowed_squads)
+    if customer_squads:
+        servers_count = len(customer_squads)
+        for squad_uuid in customer_squads[:5]:
             server = await get_server_squad_by_uuid(db, squad_uuid)
             if server:
                 servers.append(

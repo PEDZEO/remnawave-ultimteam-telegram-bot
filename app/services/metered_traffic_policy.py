@@ -60,6 +60,26 @@ def extract_squad_uuids(active_internal_squads: Any) -> list[str]:
     return result
 
 
+def get_customer_squad_uuids(active_internal_squads: Any) -> list[str]:
+    """Return squads that are selectable and billable for the customer."""
+    squads = extract_squad_uuids(active_internal_squads)
+    if not is_metered_traffic_enabled():
+        return squads
+
+    metered_squad_uuid = get_metered_squad_uuid()
+    return [squad_uuid for squad_uuid in squads if squad_uuid != metered_squad_uuid]
+
+
+def preserve_metered_squad(active_internal_squads: Any, selected_customer_squads: Any) -> list[str]:
+    """Keep the technical squad while replacing the customer-selected squads."""
+    selected = get_customer_squad_uuids(selected_customer_squads)
+    metered_squad_uuid = get_metered_squad_uuid()
+    current = extract_squad_uuids(active_internal_squads)
+    if is_metered_traffic_enabled() and metered_squad_uuid in current and metered_squad_uuid not in selected:
+        selected.append(metered_squad_uuid)
+    return selected
+
+
 def calculate_metered_usage(
     *,
     panel_counter_bytes: int,
@@ -96,7 +116,6 @@ def reset_metered_cycle(subscription: Any, *, panel_counter_bytes: int = 0) -> N
 
     now = datetime.now(UTC)
     counter = max(0, int(panel_counter_bytes or 0))
-    was_blocked = bool(getattr(subscription, 'metered_access_blocked', False))
     subscription.metered_traffic_baseline_bytes = counter
     subscription.metered_traffic_last_counter_bytes = counter
     subscription.metered_traffic_initialized_at = now
@@ -106,12 +125,11 @@ def reset_metered_cycle(subscription: Any, *, panel_counter_bytes: int = 0) -> N
     subscription.metered_warning_percent = 0
     subscription.traffic_used_gb = 0.0
 
-    if was_blocked:
-        _add_squad(subscription, get_metered_squad_uuid())
+    _add_squad(subscription, get_metered_squad_uuid())
 
 
 def restore_metered_access_if_available(subscription: Any) -> bool:
-    if not is_metered_traffic_enabled() or not getattr(subscription, 'metered_access_blocked', False):
+    if not is_metered_traffic_enabled():
         return False
 
     limit_gb = max(0, int(getattr(subscription, 'traffic_limit_gb', 0) or 0))
@@ -119,11 +137,15 @@ def restore_metered_access_if_available(subscription: Any) -> bool:
     if limit_gb > 0 and used_gb >= limit_gb:
         return False
 
-    _add_squad(subscription, get_metered_squad_uuid())
+    metered_squad_uuid = get_metered_squad_uuid()
+    current_squads = extract_squad_uuids(getattr(subscription, 'connected_squads', None))
+    was_blocked = bool(getattr(subscription, 'metered_access_blocked', False))
+    was_missing = metered_squad_uuid not in current_squads
+    _add_squad(subscription, metered_squad_uuid)
     subscription.metered_access_blocked = False
     subscription.metered_access_blocked_at = None
     subscription.metered_warning_percent = 0
-    return True
+    return was_blocked or was_missing
 
 
 def block_metered_access(subscription: Any) -> None:

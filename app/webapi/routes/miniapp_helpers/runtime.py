@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.server_squad import get_server_squad_by_uuid
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.services.remnawave_service import (
     RemnaWaveConfigurationError,
     RemnaWaveService,
@@ -25,6 +26,7 @@ async def resolve_connected_servers(
     db: AsyncSession,
     squad_uuids: list[str],
 ) -> list[MiniAppConnectedServer]:
+    squad_uuids = get_customer_squad_uuids(squad_uuids)
     if not squad_uuids:
         return []
 

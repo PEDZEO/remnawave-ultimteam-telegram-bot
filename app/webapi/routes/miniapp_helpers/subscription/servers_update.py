@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import get_customer_squad_uuids, preserve_metered_squad
 from app.utils.pricing_utils import calculate_prorated_price, get_remaining_months
 
 from .common import get_addon_discount_percent_for_user, get_period_hint_from_subscription
@@ -50,7 +51,7 @@ def resolve_selected_server_order(payload) -> list[str]:
 def resolve_server_changes(
     subscription: Subscription, selected_order: list[str]
 ) -> tuple[list[str], list[str], list[str]]:
-    current_squads = list(subscription.connected_squads or [])
+    current_squads = get_customer_squad_uuids(subscription.connected_squads)
     current_set = set(current_squads)
     selected_set = set(selected_order)
 
@@ -213,4 +214,7 @@ async def apply_servers_update_plan(
             continue
         seen_selection.add(uuid)
         ordered_selection.append(uuid)
-    subscription.connected_squads = ordered_selection
+    subscription.connected_squads = preserve_metered_squad(
+        subscription.connected_squads,
+        ordered_selection,
+    )

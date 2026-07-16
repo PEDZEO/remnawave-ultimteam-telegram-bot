@@ -10,6 +10,7 @@ from app.database.crud.server_squad import (
     get_server_squad_by_uuid,
 )
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import apply_percentage_discount, get_remaining_months
 from app.webapi.schemas.miniapp import (
     MiniAppConnectedServer,
@@ -46,7 +47,7 @@ async def prepare_server_catalog(
     )
     available_by_uuid = {server.squad_uuid: server for server in available_servers}
 
-    current_squads = list(subscription.connected_squads or [])
+    current_squads = get_customer_squad_uuids(subscription.connected_squads)
     catalog: dict[str, dict[str, Any]] = {}
     ordered_uuids: list[str] = []
 

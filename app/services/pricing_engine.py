@@ -7,6 +7,7 @@ import structlog
 
 from app.config import CLASSIC_PERIOD_PRICES, PERIOD_PRICES, settings
 from app.database.crud.server_squad import get_server_squad_by_uuid
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import calculate_months_from_days
 from app.utils.promo_offer import get_user_active_promo_discount_percent
 
@@ -265,7 +266,7 @@ class PricingEngine:
         base_price = self.apply_discount(base_price_original, period_pct)
 
         # --- Servers (monthly × months, with servers discount) ---
-        connected_squads: list[str] = subscription.connected_squads or []
+        connected_squads = get_customer_squad_uuids(subscription.connected_squads)
         promo_group_id = getattr(user, 'promo_group_id', None) if user else None
         servers_price_per_month, server_details = await self._calculate_servers_price(
             connected_squads,

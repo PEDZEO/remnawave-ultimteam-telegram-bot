@@ -7,7 +7,9 @@ from app.config import settings
 from app.services.metered_traffic_policy import (
     block_metered_access,
     calculate_metered_usage,
+    get_customer_squad_uuids,
     panel_traffic_limit_bytes,
+    preserve_metered_squad,
     reset_metered_cycle,
     restore_metered_access_if_available,
 )
@@ -90,6 +92,21 @@ def test_topup_restores_metered_squad_without_touching_standard_squad() -> None:
     assert subscription.connected_squads == [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID]
     assert subscription.metered_access_blocked is False
     assert subscription.metered_warning_percent == 0
+
+
+def test_monitor_entitles_active_subscription_when_system_squad_is_missing() -> None:
+    subscription = _subscription(connected_squads=[STANDARD_SQUAD_UUID])
+
+    assert restore_metered_access_if_available(subscription) is True
+    assert subscription.connected_squads == [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID]
+
+
+def test_system_squad_is_hidden_and_preserved_during_customer_selection() -> None:
+    assert get_customer_squad_uuids([STANDARD_SQUAD_UUID, METERED_SQUAD_UUID]) == [STANDARD_SQUAD_UUID]
+    assert preserve_metered_squad(
+        [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID],
+        [STANDARD_SQUAD_UUID],
+    ) == [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID]
 
 
 def test_reset_cycle_uses_current_panel_counter_and_restores_access() -> None:

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PERIOD_PRICES, settings
 from app.database.models import User
+from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import (
     apply_percentage_discount,
     calculate_months_from_days,
@@ -336,13 +337,13 @@ async def get_subscription_cost(subscription, db: AsyncSession) -> int:
 
         try:
             servers_cost, _ = await subscription_service.get_countries_price_by_uuids(
-                subscription.connected_squads,
+                get_customer_squad_uuids(subscription.connected_squads),
                 db,
                 promo_group_id=promo_group_id,
             )
         except AttributeError:
             servers_cost, _ = await get_countries_price_by_uuids_fallback(
-                subscription.connected_squads,
+                get_customer_squad_uuids(subscription.connected_squads),
                 db,
                 promo_group_id=promo_group_id,
             )
@@ -391,7 +392,8 @@ async def get_subscription_info_text(subscription, texts, db_user, db: AsyncSess
         devices_used = await get_current_devices_count(db_user)
     else:
         devices_used = 0
-    countries_info = await _get_countries_info(subscription.connected_squads)
+    customer_squads = get_customer_squad_uuids(subscription.connected_squads)
+    countries_info = await _get_countries_info(customer_squads)
     ', '.join([c['name'] for c in countries_info]) if countries_info else 'Нет'
 
     subscription_url = getattr(subscription, 'subscription_url', None) or 'Генерируется...'
@@ -437,7 +439,7 @@ async def get_subscription_info_text(subscription, texts, db_user, db: AsyncSess
         days_left=max(0, subscription.days_left),
         traffic_used=texts.format_traffic(subscription.traffic_used_gb, is_limit=False),
         traffic_limit=traffic_text,
-        countries_count=len(subscription.connected_squads or []),
+        countries_count=len(customer_squads),
         devices_used=devices_used,
         devices_limit=subscription.device_limit,
         autopay_status='✅ Включен' if subscription.autopay_enabled else '⌛ Выключен',
