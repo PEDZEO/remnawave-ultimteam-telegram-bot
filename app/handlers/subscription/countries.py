@@ -17,7 +17,7 @@ from app.keyboards.inline import (
     get_manage_countries_keyboard,
 )
 from app.localization.texts import get_texts
-from app.services.metered_traffic_policy import get_customer_squad_uuids, preserve_metered_squad
+from app.services.metered_traffic_policy import build_subscription_squads, get_customer_squad_uuids
 from app.services.subscription_checkout_service import (
     save_subscription_checkout_draft,
     should_offer_checkout_resume,
@@ -384,8 +384,8 @@ async def apply_countries_changes(callback: types.CallbackQuery, db_user: User, 
                     value=list(zip(added_server_ids, added_server_prices, strict=False)),
                 )
 
-        subscription.connected_squads = preserve_metered_squad(
-            subscription.connected_squads,
+        subscription.connected_squads = build_subscription_squads(
+            subscription,
             selected_countries,
         )
         subscription.updated_at = datetime.now(UTC)
@@ -904,8 +904,8 @@ async def confirm_add_countries_to_subscription(
                 description=f'Добавление стран к подписке: {", ".join(new_countries_names)}',
             )
 
-        subscription.connected_squads = preserve_metered_squad(
-            subscription.connected_squads,
+        subscription.connected_squads = build_subscription_squads(
+            subscription,
             selected_countries,
         )
         subscription.updated_at = datetime.now(UTC)

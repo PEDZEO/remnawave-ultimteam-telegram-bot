@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.tariff import get_tariff_by_id
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import is_metered_traffic_enabled, tariff_allows_special_servers
 from app.services.subscription_service import SubscriptionService
 from app.utils.pricing_utils import calculate_prorated_price
 
@@ -41,6 +42,15 @@ def validate_topup_package(
     tariff,
     package_gb: int,
 ) -> int:
+    if is_metered_traffic_enabled() and not tariff_allows_special_servers(tariff):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                'code': 'special_servers_disabled',
+                'message': 'Traffic top-up is unavailable for tariffs without special servers',
+            },
+        )
+
     if not getattr(tariff, 'traffic_topup_enabled', False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

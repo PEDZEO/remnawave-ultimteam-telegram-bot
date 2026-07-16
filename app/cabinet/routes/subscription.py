@@ -22,9 +22,10 @@ from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
+    build_subscription_squads,
     get_customer_squad_uuids,
     is_metered_traffic_enabled,
-    preserve_metered_squad,
+    tariff_allows_special_servers,
 )
 from app.services.notification_delivery_service import (
     NotificationType,
@@ -460,6 +461,9 @@ async def get_traffic_packages(
         if not tariff:
             return []
 
+        if is_metered_traffic_enabled() and not tariff_allows_special_servers(tariff):
+            return []
+
         # Проверяем, разрешена ли докупка для этого тарифа
         if not getattr(tariff, 'traffic_topup_enabled', False):
             return []
@@ -564,6 +568,12 @@ async def purchase_traffic(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Tariff not found',
+            )
+
+        if is_metered_traffic_enabled() and not tariff_allows_special_servers(tariff):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Traffic top-up is unavailable because this tariff has no special servers',
             )
 
         # Проверяем, разрешена ли докупка
@@ -2400,6 +2410,12 @@ async def save_traffic_cart(
                 detail='Тариф не найден',
             )
 
+        if is_metered_traffic_enabled() and not tariff_allows_special_servers(tariff):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Докупка трафика доступна только на тарифах со спецсерверами',
+            )
+
         if not getattr(tariff, 'traffic_topup_enabled', False):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2857,8 +2873,8 @@ async def update_countries(
                 logger.error('Ошибка обновления счётчика серверов', error=e)
 
     # Update connected squads
-    user.subscription.connected_squads = preserve_metered_squad(
-        user.subscription.connected_squads,
+    user.subscription.connected_squads = build_subscription_squads(
+        user.subscription,
         selected_countries,
     )
     user.subscription.updated_at = datetime.now(UTC)

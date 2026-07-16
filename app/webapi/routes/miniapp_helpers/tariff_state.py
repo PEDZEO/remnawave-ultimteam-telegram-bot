@@ -4,7 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.tariff import get_tariff_by_id
-from app.services.metered_traffic_policy import get_customer_squad_uuids
+from app.services.metered_traffic_policy import (
+    get_customer_squad_uuids,
+    is_metered_traffic_enabled,
+    tariff_allows_special_servers,
+)
 from app.webapi.schemas.miniapp import MiniAppCurrentTariff, MiniAppTrafficTopupPackage
 
 from ..miniapp_format_helpers import format_traffic_limit_label
@@ -65,7 +69,11 @@ async def get_current_tariff_model(db: AsyncSession, subscription, user=None) ->
         available_topup_gb = max(0, max_topup_traffic_gb - current_subscription_traffic)
 
     # Пакеты докупки трафика
-    traffic_topup_enabled = getattr(tariff, 'traffic_topup_enabled', False) and tariff.traffic_limit_gb > 0
+    traffic_topup_enabled = (
+        getattr(tariff, 'traffic_topup_enabled', False)
+        and tariff.traffic_limit_gb > 0
+        and (not is_metered_traffic_enabled() or tariff_allows_special_servers(tariff))
+    )
     traffic_topup_packages = []
 
     if traffic_topup_enabled and hasattr(tariff, 'get_traffic_topup_packages'):

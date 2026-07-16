@@ -211,8 +211,7 @@ class SubscriptionService:
 
             user_tag = self._resolve_user_tag(subscription)
 
-            if not reset_traffic:
-                restore_metered_access_if_available(subscription)
+            restore_metered_access_if_available(subscription)
 
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
@@ -265,7 +264,7 @@ class SubscriptionService:
                         ),
                     )
 
-                    if subscription.connected_squads:
+                    if subscription.connected_squads or is_metered_traffic_enabled():
                         update_kwargs['active_internal_squads'] = subscription.connected_squads
 
                     if user_tag is not None:
@@ -281,6 +280,11 @@ class SubscriptionService:
                             reset_metered_cycle(
                                 subscription,
                                 panel_counter_bytes=updated_user.used_traffic_bytes,
+                            )
+                            updated_user = await api.update_user(
+                                uuid=updated_user.uuid,
+                                traffic_limit_bytes=0,
+                                active_internal_squads=subscription.connected_squads or [],
                             )
                         else:
                             await self._reset_user_traffic(
@@ -318,7 +322,7 @@ class SubscriptionService:
                         ),
                     )
 
-                    if subscription.connected_squads:
+                    if subscription.connected_squads or is_metered_traffic_enabled():
                         create_kwargs['active_internal_squads'] = subscription.connected_squads
 
                     if user_tag is not None:
@@ -334,6 +338,11 @@ class SubscriptionService:
                             reset_metered_cycle(
                                 subscription,
                                 panel_counter_bytes=updated_user.used_traffic_bytes,
+                            )
+                            updated_user = await api.update_user(
+                                uuid=updated_user.uuid,
+                                traffic_limit_bytes=0,
+                                active_internal_squads=subscription.connected_squads or [],
                             )
                         else:
                             await self._reset_user_traffic(
@@ -405,8 +414,7 @@ class SubscriptionService:
 
             user_tag = self._resolve_user_tag(subscription)
 
-            if not reset_traffic:
-                restore_metered_access_if_available(subscription)
+            restore_metered_access_if_available(subscription)
 
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
@@ -427,7 +435,7 @@ class SubscriptionService:
                     ),
                 )
 
-                if subscription.connected_squads:
+                if subscription.connected_squads or is_metered_traffic_enabled():
                     update_kwargs['active_internal_squads'] = subscription.connected_squads
 
                 if user_tag is not None:
@@ -443,6 +451,11 @@ class SubscriptionService:
                         reset_metered_cycle(
                             subscription,
                             panel_counter_bytes=updated_user.used_traffic_bytes,
+                        )
+                        updated_user = await api.update_user(
+                            uuid=updated_user.uuid,
+                            traffic_limit_bytes=0,
+                            active_internal_squads=subscription.connected_squads or [],
                         )
                     else:
                         await self._reset_user_traffic(

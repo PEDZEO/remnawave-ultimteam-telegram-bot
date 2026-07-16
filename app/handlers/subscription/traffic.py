@@ -19,6 +19,7 @@ from app.keyboards.inline import (
     get_reset_traffic_confirm_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.metered_traffic_policy import tariff_allows_traffic_topup
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_cart_service import user_cart_service
@@ -70,7 +71,7 @@ async def handle_add_traffic(callback: types.CallbackQuery, db_user: User, db: A
     # Режим тарифов - проверяем настройки тарифа
     if settings.is_tariffs_mode() and subscription.tariff_id:
         tariff = await get_tariff_by_id(db, subscription.tariff_id)
-        if not tariff or not tariff.can_topup_traffic():
+        if not tariff_allows_traffic_topup(tariff):
             await callback.answer(
                 texts.t(
                     'TARIFF_TRAFFIC_TOPUP_DISABLED',
@@ -456,7 +457,7 @@ async def add_traffic(callback: types.CallbackQuery, db_user: User, db: AsyncSes
     if settings.is_tariffs_mode() and subscription and subscription.tariff_id:
         # Режим тарифов - берем цену из тарифа
         tariff = await get_tariff_by_id(db, subscription.tariff_id)
-        if tariff and tariff.can_topup_traffic():
+        if tariff_allows_traffic_topup(tariff):
             base_price = tariff.get_traffic_topup_price(traffic_gb) or 0
         else:
             await callback.answer('⚠️ На вашем тарифе докупка трафика недоступна', show_alert=True)

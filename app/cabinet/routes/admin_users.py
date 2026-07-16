@@ -984,8 +984,7 @@ async def update_user_subscription(
                     traffic_limit = tariff.traffic_limit_gb
                 if not request.device_limit:
                     device_limit = tariff.device_limit
-                if tariff.allowed_squads:
-                    connected_squads = tariff.allowed_squads
+                connected_squads = tariff.allowed_squads or []
 
         new_sub = await create_paid_subscription(
             db=db,
@@ -1093,8 +1092,7 @@ async def update_user_subscription(
             max_device_limit=tariff.max_device_limit,
         )
         # Set squads from tariff
-        if tariff.allowed_squads:
-            subscription.connected_squads = tariff.allowed_squads
+        subscription.connected_squads = tariff.allowed_squads or []
 
         # Convert trial subscription to paid when switching to a non-trial tariff
         if subscription.is_trial and not tariff.is_trial_available:

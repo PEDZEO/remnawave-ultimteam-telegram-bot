@@ -9,6 +9,7 @@ from app.config import PERIOD_PRICES, settings
 from app.database.models import User
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
+from app.services.metered_traffic_policy import tariff_allows_traffic_topup
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 from app.utils.price_display import PriceInfo, format_price_button
 from app.utils.pricing_utils import (
@@ -1128,7 +1129,7 @@ def get_subscription_keyboard(
             show_traffic_topup = False
             if subscription and (subscription.traffic_limit_gb or 0) > 0:
                 if settings.is_tariffs_mode() and tariff:
-                    show_traffic_topup = tariff.can_topup_traffic()
+                    show_traffic_topup = tariff_allows_traffic_topup(tariff)
                 elif settings.is_traffic_topup_enabled() and not settings.is_traffic_topup_blocked():
                     show_traffic_topup = True
 

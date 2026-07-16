@@ -31,6 +31,12 @@ from app.database.models import (
     TransactionType,
     User,
 )
+from app.services.metered_traffic_policy import (
+    build_subscription_squads,
+    disable_metered_access,
+    get_metered_squad_uuid,
+    reset_metered_cycle,
+)
 
 from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.tariffs import (
@@ -189,6 +195,7 @@ async def list_tariffs(
                 is_daily=tariff.is_daily,
                 daily_price_kopeks=tariff.daily_price_kopeks,
                 allow_traffic_topup=tariff.allow_traffic_topup,
+                special_servers_enabled=tariff.special_servers_enabled,
                 traffic_limit_gb=tariff.traffic_limit_gb,
                 device_limit=tariff.device_limit,
                 tier_level=tariff.tier_level,
@@ -272,6 +279,7 @@ async def get_tariff(
         show_in_gift=tariff.show_in_gift,
         is_trial_available=tariff.is_trial_available,
         allow_traffic_topup=tariff.allow_traffic_topup,
+        special_servers_enabled=tariff.special_servers_enabled,
         traffic_topup_enabled=tariff.traffic_topup_enabled,
         traffic_topup_packages=tariff.traffic_topup_packages or {},
         max_topup_traffic_gb=tariff.max_topup_traffic_gb,
@@ -332,6 +340,7 @@ async def create_new_tariff(
         is_active=request.is_active,
         show_in_gift=request.show_in_gift,
         allow_traffic_topup=request.allow_traffic_topup,
+        special_servers_enabled=request.special_servers_enabled,
         traffic_topup_enabled=request.traffic_topup_enabled,
         traffic_topup_packages=request.traffic_topup_packages,
         max_topup_traffic_gb=request.max_topup_traffic_gb,
@@ -390,6 +399,7 @@ async def update_existing_tariff(
     # Capture old values for change detection
     old_squads = list(tariff.allowed_squads) if tariff.allowed_squads else []
     old_external_squad = tariff.external_squad_uuid
+    old_special_servers_enabled = tariff.special_servers_enabled
 
     # Build updates dict
     updates = {}
@@ -403,6 +413,8 @@ async def update_existing_tariff(
         updates['show_in_gift'] = request.show_in_gift
     if request.allow_traffic_topup is not None:
         updates['allow_traffic_topup'] = request.allow_traffic_topup
+    if request.special_servers_enabled is not None:
+        updates['special_servers_enabled'] = request.special_servers_enabled
     if request.traffic_topup_enabled is not None:
         updates['traffic_topup_enabled'] = request.traffic_topup_enabled
     if request.traffic_topup_packages is not None:
@@ -478,9 +490,17 @@ async def update_existing_tariff(
     ext_squad_changed = (
         'external_squad_uuid' in request.model_fields_set and tariff.external_squad_uuid != old_external_squad
     )
-    if squads_changed or ext_squad_changed:
+    special_servers_changed = (
+        request.special_servers_enabled is not None
+        and tariff.special_servers_enabled != old_special_servers_enabled
+    )
+    if squads_changed or ext_squad_changed or special_servers_changed:
         asyncio.create_task(
-            _background_sync_squads(tariff_id, admin.id),
+            _background_sync_squads(
+                tariff_id,
+                admin.id,
+                reset_metered_cycles=special_servers_changed and tariff.special_servers_enabled,
+            ),
             name=f'sync-squads-tariff-{tariff_id}',
         )
 
@@ -896,7 +916,12 @@ async def apply_tariff_limits_to_active_subscriptions(
     )
 
 
-async def _background_sync_squads(tariff_id: int, admin_id: int) -> None:
+async def _background_sync_squads(
+    tariff_id: int,
+    admin_id: int,
+    *,
+    reset_metered_cycles: bool = False,
+) -> None:
     """Run squad sync in background with its own DB session (fire-and-forget)."""
     from app.database.database import AsyncSessionLocal
     from app.services.remnawave_service import RemnaWaveService
@@ -941,12 +966,33 @@ async def _background_sync_squads(tariff_id: int, admin_id: int) -> None:
                         return
                     async with semaphore:
                         try:
-                            await api.update_user(
+                            desired_squads = build_subscription_squads(
+                                sub,
+                                new_squads,
+                                tariff=tariff,
+                            )
+                            if reset_metered_cycles and tariff.special_servers_enabled:
+                                metered_squad_uuid = get_metered_squad_uuid()
+                                if metered_squad_uuid and metered_squad_uuid not in desired_squads:
+                                    desired_squads.append(metered_squad_uuid)
+
+                            updated_user = await api.update_user(
                                 uuid=remnawave_uuid,
-                                active_internal_squads=new_squads,
+                                active_internal_squads=desired_squads,
                                 external_squad_uuid=ext_squad_uuid,
                             )
-                            sub.connected_squads = new_squads
+                            sub.connected_squads = desired_squads
+                            if reset_metered_cycles and tariff.special_servers_enabled:
+                                reset_metered_cycle(
+                                    sub,
+                                    panel_counter_bytes=updated_user.used_traffic_bytes,
+                                    tariff=tariff,
+                                )
+                            elif not tariff.special_servers_enabled:
+                                disable_metered_access(
+                                    sub,
+                                    panel_counter_bytes=updated_user.used_traffic_bytes,
+                                )
                             updated += 1
                         except Exception as e:
                             failed += 1
@@ -1058,13 +1104,23 @@ async def sync_tariff_squads(
                     return 'skipped'
 
                 try:
-                    await api.update_user(
+                    desired_squads = build_subscription_squads(
+                        sub,
+                        new_squads,
+                        tariff=tariff,
+                    )
+                    updated_user = await api.update_user(
                         uuid=remnawave_uuid,
-                        active_internal_squads=new_squads,
+                        active_internal_squads=desired_squads,
                         external_squad_uuid=ext_squad_uuid,
                     )
                     # Update local DB only on successful API call
-                    sub.connected_squads = new_squads
+                    sub.connected_squads = desired_squads
+                    if not tariff.special_servers_enabled:
+                        disable_metered_access(
+                            sub,
+                            panel_counter_bytes=updated_user.used_traffic_bytes,
+                        )
                     updated_count += 1
                     consecutive_failures = 0
                     return 'ok'

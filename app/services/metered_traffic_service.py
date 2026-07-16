@@ -20,7 +20,9 @@ from app.localization.texts import get_texts
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
     block_metered_access,
+    build_subscription_squads,
     calculate_metered_usage,
+    disable_metered_access,
     extract_squad_uuids,
     get_metered_check_interval_seconds,
     get_metered_node_uuids,
@@ -28,6 +30,7 @@ from app.services.metered_traffic_policy import (
     get_metered_warning_percent,
     is_metered_traffic_enabled,
     restore_metered_access_if_available,
+    subscription_allows_special_servers,
 )
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.services.remnawave_service import RemnaWaveService
@@ -220,6 +223,28 @@ class MeteredTrafficService:
 
             user = subscription.user
             panel_counter = max(0, int(panel_user.used_traffic_bytes or 0))
+            if not subscription_allows_special_servers(subscription):
+                disable_metered_access(subscription, panel_counter_bytes=panel_counter)
+                desired_squads = build_subscription_squads(subscription)
+                subscription.connected_squads = desired_squads
+                current_squads = extract_squad_uuids(panel_user.active_internal_squads)
+                needs_reconcile = set(current_squads) != set(desired_squads) or panel_user.traffic_limit_bytes != 0
+
+                if needs_reconcile:
+                    await api.update_user(
+                        uuid=panel_user.uuid,
+                        traffic_limit_bytes=0,
+                        active_internal_squads=desired_squads,
+                    )
+                    result['reconciled'] = True
+
+                if panel_user.status == UserStatus.LIMITED:
+                    await api.enable_user(panel_user.uuid)
+                    result['reconciled'] = True
+
+                await db.commit()
+                return result
+
             initialized = subscription.metered_traffic_initialized_at is not None
 
             if not initialized:

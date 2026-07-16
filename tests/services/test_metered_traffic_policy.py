@@ -6,12 +6,14 @@ import pytest
 from app.config import settings
 from app.services.metered_traffic_policy import (
     block_metered_access,
+    build_subscription_squads,
     calculate_metered_usage,
     get_customer_squad_uuids,
     panel_traffic_limit_bytes,
     preserve_metered_squad,
     reset_metered_cycle,
     restore_metered_access_if_available,
+    tariff_allows_traffic_topup,
 )
 from app.services.metered_traffic_service import MeteredTrafficService
 
@@ -39,6 +41,7 @@ def _subscription(**overrides):
         'metered_access_blocked': False,
         'metered_access_blocked_at': None,
         'metered_warning_percent': 0,
+        'tariff': SimpleNamespace(special_servers_enabled=True),
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -99,6 +102,40 @@ def test_monitor_entitles_active_subscription_when_system_squad_is_missing() -> 
 
     assert restore_metered_access_if_available(subscription) is True
     assert subscription.connected_squads == [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID]
+
+
+def test_tariff_without_special_servers_never_receives_metered_squad() -> None:
+    subscription = _subscription(
+        connected_squads=[STANDARD_SQUAD_UUID, METERED_SQUAD_UUID],
+        tariff=SimpleNamespace(special_servers_enabled=False),
+    )
+
+    assert build_subscription_squads(subscription) == [STANDARD_SQUAD_UUID]
+    assert restore_metered_access_if_available(subscription) is True
+    assert subscription.connected_squads == [STANDARD_SQUAD_UUID]
+    assert subscription.metered_access_blocked is False
+
+
+def test_special_server_tariff_keeps_metered_squad_out_after_exhaustion() -> None:
+    subscription = _subscription(
+        connected_squads=[STANDARD_SQUAD_UUID],
+        traffic_used_gb=100.0,
+        metered_access_blocked=True,
+    )
+
+    assert build_subscription_squads(subscription) == [STANDARD_SQUAD_UUID]
+
+
+def test_tariff_traffic_topup_requires_special_servers() -> None:
+    tariff = SimpleNamespace(
+        special_servers_enabled=False,
+        can_topup_traffic=lambda: True,
+    )
+
+    assert tariff_allows_traffic_topup(tariff) is False
+
+    tariff.special_servers_enabled = True
+    assert tariff_allows_traffic_topup(tariff) is True
 
 
 def test_system_squad_is_hidden_and_preserved_during_customer_selection() -> None:

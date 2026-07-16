@@ -58,6 +58,7 @@ class TariffListItem(BaseModel):
     is_daily: bool = False
     daily_price_kopeks: int = 0
     allow_traffic_topup: bool = True
+    special_servers_enabled: bool = False
     traffic_limit_gb: int
     device_limit: int
     tier_level: int
@@ -86,6 +87,7 @@ class TariffDetailResponse(BaseModel):
     show_in_gift: bool = True
     is_trial_available: bool
     allow_traffic_topup: bool = True
+    special_servers_enabled: bool = False
     traffic_topup_enabled: bool = False
     traffic_topup_packages: dict[str, int] = Field(default_factory=dict)
     max_topup_traffic_gb: int = 0
@@ -132,6 +134,7 @@ class TariffCreateRequest(BaseModel):
     is_active: bool = True
     show_in_gift: bool = True
     allow_traffic_topup: bool = True
+    special_servers_enabled: bool = False
     traffic_topup_enabled: bool = False
     traffic_topup_packages: dict[str, int] = Field(default_factory=dict)
     max_topup_traffic_gb: int = Field(0, ge=0)
@@ -173,6 +176,7 @@ class TariffUpdateRequest(BaseModel):
     is_active: bool | None = None
     show_in_gift: bool | None = None
     allow_traffic_topup: bool | None = None
+    special_servers_enabled: bool | None = None
     traffic_topup_enabled: bool | None = None
     traffic_topup_packages: dict[str, int] | None = None
     max_topup_traffic_gb: int | None = Field(None, ge=0)

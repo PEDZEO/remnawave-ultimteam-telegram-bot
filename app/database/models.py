@@ -1538,6 +1538,7 @@ class Tariff(Base):
 
     # Сквады (серверы) доступные в тарифе
     allowed_squads = Column(JSON, default=list)  # список UUID сквадов
+    special_servers_enabled = Column(Boolean, default=False, server_default='false', nullable=False)
 
     # Лимиты трафика по серверам (JSON: {"uuid": {"traffic_limit_gb": 100}, ...})
     # Если сервер не указан - используется общий traffic_limit_gb

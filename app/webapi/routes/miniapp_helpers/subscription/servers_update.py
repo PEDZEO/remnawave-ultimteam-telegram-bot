@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import Subscription, User
-from app.services.metered_traffic_policy import get_customer_squad_uuids, preserve_metered_squad
+from app.services.metered_traffic_policy import build_subscription_squads, get_customer_squad_uuids
 from app.utils.pricing_utils import calculate_prorated_price, get_remaining_months
 
 from .common import get_addon_discount_percent_for_user, get_period_hint_from_subscription
@@ -214,7 +214,7 @@ async def apply_servers_update_plan(
             continue
         seen_selection.add(uuid)
         ordered_selection.append(uuid)
-    subscription.connected_squads = preserve_metered_squad(
-        subscription.connected_squads,
+    subscription.connected_squads = build_subscription_squads(
+        subscription,
         ordered_selection,
     )
