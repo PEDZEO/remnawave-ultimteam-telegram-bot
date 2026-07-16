@@ -14,6 +14,7 @@ from app.config import settings
 from app.database.crud.user import get_user_by_remnawave_uuid
 from app.database.database import AsyncSessionLocal
 from app.services.admin_notification_service import AdminNotificationService
+from app.services.metered_traffic_service import metered_traffic_service
 from app.services.remnawave_service import RemnaWaveService
 from app.utils.cache import cache, cache_key
 
@@ -954,9 +955,14 @@ class TrafficMonitoringScheduler:
     def set_bot(self, bot):
         self.bot = bot
         self._v2_scheduler.set_bot(bot)
+        metered_traffic_service.set_bot(bot)
 
     def is_enabled(self) -> bool:
-        return self._v2_service.is_fast_check_enabled() or self._v2_service.is_daily_check_enabled()
+        return (
+            self._v2_service.is_fast_check_enabled()
+            or self._v2_service.is_daily_check_enabled()
+            or metered_traffic_service.is_enabled()
+        )
 
     def get_interval_hours(self) -> int:
         """Для обратной совместимости — возвращает интервал быстрой проверки в часах"""
@@ -974,6 +980,10 @@ class TrafficMonitoringScheduler:
             threshold = self._v2_service.get_daily_threshold_gb()
             time_str = check_time.strftime('%H:%M') if check_time else '00:00'
             info.append(f'Суточная: в {time_str}, порог {threshold} ГБ')
+        if metered_traffic_service.is_enabled():
+            info.append(
+                f'Спецсерверы: каждые {metered_traffic_service.get_status()["interval_seconds"]} сек'
+            )
         return '; '.join(info) if info else 'Отключен'
 
     async def _should_send_notification(self, user_uuid: str) -> bool:
@@ -986,9 +996,11 @@ class TrafficMonitoringScheduler:
 
     async def start_monitoring(self):
         await self._v2_scheduler.start()
+        await metered_traffic_service.start()
 
     def stop_monitoring(self):
         asyncio.create_task(self._v2_scheduler.stop())
+        asyncio.create_task(metered_traffic_service.stop())
 
 
 # Обратная совместимость

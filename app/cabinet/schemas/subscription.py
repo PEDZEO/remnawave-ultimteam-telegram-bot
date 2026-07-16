@@ -58,6 +58,11 @@ class SubscriptionData(BaseModel):
     tariff_id: int | None = None
     tariff_name: str | None = None
     traffic_reset_mode: str | None = None
+    metered_traffic_enabled: bool = False
+    metered_access_blocked: bool = False
+    metered_server_label: str | None = None
+    metered_traffic_remaining_gb: float | None = None
+    standard_traffic_unlimited: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

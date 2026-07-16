@@ -1,14 +1,18 @@
 """Admin settings routes for cabinet - system configuration management."""
 
+from dataclasses import asdict
 from string import Formatter
 from typing import Any
+from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import User
+from app.database.models import Subscription, User
+from app.services.metered_traffic_service import metered_traffic_service
 from app.services.system_settings_service import (
     ReadOnlySettingError,
     bot_configuration_service,
@@ -93,6 +97,7 @@ def _coerce_value(key: str, value: Any) -> Any:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Value is required')
 
     python_type = definition.python_type
+    normalized: Any
 
     try:
         if python_type is bool:
@@ -131,7 +136,29 @@ def _coerce_value(key: str, value: Any) -> Any:
     if key == 'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT' and not 25 <= normalized <= 95:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning percent must be between 25 and 95')
 
-    if key == 'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU':
+    if key == 'ULTIMA_METERED_CHECK_INTERVAL_SECONDS' and not 15 <= normalized <= 3600:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Interval must be between 15 and 3600 seconds')
+
+    if key == 'ULTIMA_METERED_WARNING_PERCENT' and not 25 <= normalized <= 95:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Warning percent must be between 25 and 95')
+
+    if key == 'ULTIMA_METERED_SERVER_LABEL':
+        normalized = str(normalized).strip()
+        if not normalized or len(normalized) > 40:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Server label must contain 1 to 40 characters')
+
+    if key in {'ULTIMA_METERED_SQUAD_UUID', 'ULTIMA_METERED_NODE_UUIDS'}:
+        parts = [part.strip() for part in str(normalized).split(',') if part.strip()]
+        if key == 'ULTIMA_METERED_SQUAD_UUID' and len(parts) > 1:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Only one squad UUID is allowed')
+        try:
+            for part in parts:
+                UUID(part)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Value must contain valid UUIDs') from error
+        normalized = ','.join(dict.fromkeys(parts))
+
+    if key in {'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU', 'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU'}:
         message = str(normalized).strip()
         if not message:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Traffic warning message cannot be empty')
@@ -158,6 +185,24 @@ def _coerce_value(key: str, value: Any) -> Any:
         normalized = message
 
     return normalized
+
+
+async def _metered_status_payload(db: AsyncSession) -> dict[str, Any]:
+    blocked = await db.scalar(select(func.count()).select_from(Subscription).where(Subscription.metered_access_blocked))
+    initialized = await db.scalar(
+        select(func.count()).select_from(Subscription).where(Subscription.metered_traffic_initialized_at.is_not(None))
+    )
+    active = await db.scalar(
+        select(func.count()).select_from(Subscription).where(Subscription.status.in_(['active', 'trial']))
+    )
+    return {
+        **metered_traffic_service.get_status(),
+        'subscriptions': {
+            'active': int(active or 0),
+            'initialized': int(initialized or 0),
+            'blocked': int(blocked or 0),
+        },
+    }
 
 
 def _serialize_definition(definition, include_choices: bool = True) -> SettingDefinition:
@@ -244,6 +289,26 @@ async def list_settings(
     return items
 
 
+@router.get('/metered-traffic/status')
+async def get_metered_traffic_status(
+    admin: User = Depends(require_permission('settings:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Return runtime state and subscription counters for split traffic mode."""
+    return await _metered_status_payload(db)
+
+
+@router.post('/metered-traffic/run')
+async def run_metered_traffic_check(
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Run one reconciliation pass without waiting for the scheduler."""
+    stats = await metered_traffic_service.run_once()
+    logger.info('Admin started metered traffic reconciliation', telegram_id=admin.telegram_id)
+    return {'run': asdict(stats), **(await _metered_status_payload(db))}
+
+
 @router.get('/{key}', response_model=SettingDefinition)
 async def get_setting(
     key: str,
@@ -278,6 +343,12 @@ async def update_setting(
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     await db.commit()
 
+    if key.startswith('ULTIMA_METERED_'):
+        if metered_traffic_service.is_enabled():
+            await metered_traffic_service.start()
+        else:
+            await metered_traffic_service.stop()
+
     logger.info('Admin updated setting to', telegram_id=admin.telegram_id, key=key, value=value)
     return _serialize_definition(definition)
 
@@ -299,6 +370,12 @@ async def reset_setting(
     except ReadOnlySettingError as error:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     await db.commit()
+
+    if key.startswith('ULTIMA_METERED_'):
+        if metered_traffic_service.is_enabled():
+            await metered_traffic_service.start()
+        else:
+            await metered_traffic_service.stop()
 
     logger.info('Admin reset setting', telegram_id=admin.telegram_id, key=key)
     return _serialize_definition(definition)

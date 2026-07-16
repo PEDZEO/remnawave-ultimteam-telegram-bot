@@ -136,6 +136,22 @@ class Settings(BaseSettings):
         'Докупить трафик можно сейчас — дополнительный пакет будет действовать 30 дней.'
     )
 
+    # Split traffic mode: only a dedicated Remnawave internal squad is removed
+    # when the commercial traffic quota is exhausted. The global panel limit is
+    # forced to unlimited so standard zero-multiplier nodes remain available.
+    ULTIMA_METERED_TRAFFIC_ENABLED: bool = False
+    ULTIMA_METERED_SQUAD_UUID: str = ''
+    ULTIMA_METERED_NODE_UUIDS: str = ''
+    ULTIMA_METERED_CHECK_INTERVAL_SECONDS: int = 60
+    ULTIMA_METERED_WARNING_PERCENT: int = 80
+    ULTIMA_METERED_SERVER_LABEL: str = 'Спецсерверы'
+    ULTIMA_METERED_EXHAUSTED_MESSAGE_RU: str = (
+        '⚠️ <b>Трафик спецсерверов закончился</b>\n\n'
+        'Использовано {used_gb} из {limit_gb} ГБ. Спецсерверы временно отключены, '
+        'но обычные безлимитные VPN-серверы продолжают работать.\n\n'
+        'Докупить трафик можно прямо сейчас — доступ восстановится автоматически.'
+    )
+
     TRIAL_DURATION_DAYS: int = 3
     TRIAL_TRAFFIC_LIMIT_GB: int = 10
     TRIAL_DEVICE_LIMIT: int = 2

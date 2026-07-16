@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 
-from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, TrafficLimitStrategy
+from app.config import settings
+from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, TrafficLimitStrategy, UserStatus
 
 
 @pytest.mark.asyncio
@@ -95,6 +96,89 @@ async def test_get_bandwidth_stats_nodes_users_uses_new_multi_node_endpoint(
         'sparklineData': [1],
         'topUsers': [],
     }
+
+
+@pytest.mark.asyncio
+async def test_get_bandwidth_stats_nodes_users_sends_required_date_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = RemnaWaveAPI('https://panel.example', 'token')
+
+    async def fake_make_request(
+        method: str,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        quiet_statuses: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        assert method == 'POST'
+        assert endpoint == '/api/bandwidth-stats/nodes/users'
+        assert data == {'nodesUuids': ['node-1']}
+        assert params == {'start': '2026-07-01', 'end': '2026-07-16'}
+        return {'response': {'categories': [], 'sparklineData': [], 'topUsers': []}}
+
+    monkeypatch.setattr(api, '_make_request', fake_make_request)
+
+    await api.get_bandwidth_stats_nodes_users(
+        ['node-1'],
+        start_date='2026-07-01',
+        end_date='2026-07-16',
+    )
+
+
+@pytest.mark.asyncio
+async def test_metered_mode_forces_unlimited_no_reset_panel_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_TRAFFIC_ENABLED', True)
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_SQUAD_UUID', '11111111-1111-1111-1111-111111111111')
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_UUIDS', '22222222-2222-2222-2222-222222222222')
+    api = RemnaWaveAPI('https://panel.example', 'token')
+    now = datetime(2026, 7, 16, tzinfo=UTC)
+    payloads: list[dict[str, Any]] = []
+
+    async def fake_make_request(
+        method: str,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        quiet_statuses: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        assert method in {'POST', 'PATCH'}
+        payloads.append(data or {})
+        return {
+            'response': {
+                'uuid': 'user-uuid',
+                'shortUuid': 'short',
+                'username': 'demo',
+                'status': 'ACTIVE',
+                'trafficLimitBytes': 0,
+                'trafficLimitStrategy': 'NO_RESET',
+                'expireAt': now.isoformat(),
+                'subscriptionUrl': '',
+                'activeInternalSquads': [],
+                'createdAt': now.isoformat(),
+                'updatedAt': now.isoformat(),
+            }
+        }
+
+    monkeypatch.setattr(api, '_make_request', fake_make_request)
+
+    await api.create_user(
+        username='demo',
+        expire_at=now,
+        status=UserStatus.ACTIVE,
+        traffic_limit_bytes=35 * 1024**3,
+        traffic_limit_strategy=TrafficLimitStrategy.MONTH,
+    )
+    await api.update_user(
+        uuid='user-uuid',
+        traffic_limit_bytes=40 * 1024**3,
+        traffic_limit_strategy=TrafficLimitStrategy.MONTH,
+    )
+
+    assert [payload['trafficLimitBytes'] for payload in payloads] == [0, 0]
+    assert [payload['trafficLimitStrategy'] for payload in payloads] == ['NO_RESET', 'NO_RESET']
 
 
 def test_parse_user_accepts_month_rolling_and_number_traffic() -> None:

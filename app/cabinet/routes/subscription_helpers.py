@@ -5,6 +5,7 @@ from typing import Any
 
 from app.config import settings
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import is_metered_traffic_enabled
 
 from ..schemas.subscription import ServerInfo, SubscriptionData, SubscriptionResponse
 
@@ -145,6 +146,10 @@ def subscription_to_response(
                 next_daily_charge_at = next_charge
 
     hide_link = settings.should_hide_subscription_link()
+    metered_enabled = is_metered_traffic_enabled()
+    metered_remaining_gb = None
+    if metered_enabled and traffic_limit_gb > 0:
+        metered_remaining_gb = round(max(0.0, traffic_limit_gb - traffic_used_gb), 2)
 
     return SubscriptionResponse(
         id=subscription.id,
@@ -176,4 +181,9 @@ def subscription_to_response(
         tariff_id=tariff_id,
         tariff_name=tariff_name,
         traffic_reset_mode=traffic_reset_mode,
+        metered_traffic_enabled=metered_enabled,
+        metered_access_blocked=bool(getattr(subscription, 'metered_access_blocked', False)),
+        metered_server_label=(settings.ULTIMA_METERED_SERVER_LABEL if metered_enabled else None),
+        metered_traffic_remaining_gb=metered_remaining_gb,
+        standard_traffic_unlimited=metered_enabled,
     )

@@ -26,6 +26,17 @@ from app.services.web_api_token_service import ensure_default_web_api_token
 logger = structlog.get_logger(__name__)
 
 
+SETTING_TITLES: dict[str, str] = {
+    'ULTIMA_METERED_TRAFFIC_ENABLED': 'Раздельный учет трафика',
+    'ULTIMA_METERED_SQUAD_UUID': 'Squad тарифицируемых серверов',
+    'ULTIMA_METERED_NODE_UUIDS': 'Ноды тарифицируемых серверов',
+    'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': 'Интервал проверки',
+    'ULTIMA_METERED_WARNING_PERCENT': 'Порог предупреждения',
+    'ULTIMA_METERED_SERVER_LABEL': 'Название группы серверов',
+    'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU': 'Сообщение при исчерпании трафика',
+}
+
+
 def _title_from_key(key: str) -> str:
     parts = key.split('_')
     if not parts:
@@ -51,7 +62,7 @@ class SettingDefinition:
 
     @property
     def display_name(self) -> str:
-        return _title_from_key(self.key)
+        return SETTING_TITLES.get(self.key, _title_from_key(self.key))
 
 
 @dataclass(slots=True)
@@ -103,6 +114,7 @@ class BotConfigurationService:
         'SUBSCRIPTION_PRICES': '💵 Стоимость тарифов',
         'TRAFFIC': '📊 Трафик',
         'TRAFFIC_PACKAGES': '📦 Пакеты трафика',
+        'METERED_TRAFFIC': '⚡ Раздельный трафик Ultima',
         'TRIAL': '🎁 Пробный период',
         'REFERRAL': '👥 Реферальная программа',
         'TAP_REWARDS': '🎁 Подарки за тапы',
@@ -164,6 +176,9 @@ class BotConfigurationService:
         'SUBSCRIPTION_PRICES': 'Стоимость подписок по периодам в копейках.',
         'TRAFFIC': 'Лимиты трафика и стратегии сброса.',
         'TRAFFIC_PACKAGES': 'Цены пакетов трафика и конфигурация предложений.',
+        'METERED_TRAFFIC': (
+            'Лимит действует только для выделенного squad. Остальные серверы остаются безлимитными.'
+        ),
         'TRIAL': 'Длительность и ограничения пробного периода.',
         'REFERRAL': 'Бонусы и пороги реферальной программы.',
         'TAP_REWARDS': 'Настройки подарков за нажатия по логотипу в кабинете Ultima.',
@@ -306,6 +321,13 @@ class BotConfigurationService:
         'CABINET_ULTIMA_ACCOUNT_LINKING_MODE': 'HAPP',
         'ULTIMA_TRAFFIC_WARNING_DEFAULT_PERCENT': 'WEBHOOK_NOTIFICATIONS',
         'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU': 'WEBHOOK_NOTIFICATIONS',
+        'ULTIMA_METERED_TRAFFIC_ENABLED': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_SQUAD_UUID': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_NODE_UUIDS': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_WARNING_PERCENT': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_SERVER_LABEL': 'METERED_TRAFFIC',
+        'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU': 'METERED_TRAFFIC',
         'CONNECT_BUTTON_MODE': 'CONNECT_BUTTON',
         'MINIAPP_CUSTOM_URL': 'CONNECT_BUTTON',
         'ENABLE_DEEP_LINKS': 'ADDITIONAL',
@@ -1162,6 +1184,47 @@ class BotConfigurationService:
             'example': '📊 <b>Трафик почти закончился</b>\\nОсталось {remaining_gb} ГБ.',
             'warning': 'Не удаляйте фигурные скобки у используемых переменных.',
             'dependencies': 'WEBHOOK_NOTIFY_BANDWIDTH_THRESHOLD',
+        },
+        'ULTIMA_METERED_TRAFFIC_ENABLED': {
+            'description': (
+                'Включает отдельный лимит для выбранного squad. Глобальный лимит пользователя '
+                'в Remnawave становится безлимитным, а при исчерпании отключается только этот squad.'
+            ),
+            'format': 'Булево значение.',
+            'warning': 'Включайте только после заполнения UUID squad и добавления его в нужные тарифы.',
+            'dependencies': 'ULTIMA_METERED_SQUAD_UUID, ULTIMA_METERED_NODE_UUIDS',
+        },
+        'ULTIMA_METERED_SQUAD_UUID': {
+            'description': 'UUID отдельного internal squad с тарифицируемыми нодами.',
+            'format': 'Один UUID.',
+            'example': '00000000-0000-0000-0000-000000000000',
+        },
+        'ULTIMA_METERED_NODE_UUIDS': {
+            'description': 'UUID нод, трафик которых должен расходовать лимит.',
+            'format': 'UUID через запятую без JSON.',
+            'example': 'uuid-ноды-1,uuid-ноды-2',
+            'warning': 'У этих нод должен быть multiplier 1, у безлимитных нод — 0.',
+        },
+        'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': {
+            'description': 'Как часто бот сверяет счетчики и доступ к squad.',
+            'format': 'Целое число от 15 до 3600 секунд.',
+            'example': '60',
+        },
+        'ULTIMA_METERED_WARNING_PERCENT': {
+            'description': 'Когда предупредить пользователя о заканчивающемся трафике.',
+            'format': 'Целое число от 25 до 95.',
+            'example': '80',
+        },
+        'ULTIMA_METERED_SERVER_LABEL': {
+            'description': 'Короткое название тарифицируемой группы в кабинете и уведомлениях.',
+            'format': 'Текст до 40 символов.',
+            'example': 'Спецсерверы',
+        },
+        'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU': {
+            'description': 'Сообщение после полного расходования лимита тарифицируемых серверов.',
+            'format': 'Telegram HTML. Переменные: {percent}, {used_gb}, {limit_gb}, {remaining_gb}.',
+            'example': '⚠️ <b>Трафик спецсерверов закончился</b>\\nБезлимитные серверы продолжают работать.',
+            'warning': 'К уведомлению автоматически добавляется кнопка докупки трафика.',
         },
         'WEBHOOK_NOTIFY_DEVICES': {
             'description': 'Уведомления о подключении и отключении устройств.',

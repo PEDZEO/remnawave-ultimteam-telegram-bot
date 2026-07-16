@@ -34,6 +34,7 @@ from app.external.remnawave_api import (
     TrafficLimitStrategy,
     UserStatus,
 )
+from app.services.metered_traffic_policy import is_metered_traffic_enabled, panel_traffic_limit_bytes
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
@@ -1669,10 +1670,13 @@ class RemnaWaveService:
                 status = SubscriptionStatus.DISABLED
 
             traffic_limit_bytes = panel_user.get('trafficLimitBytes', 0)
-            traffic_limit_gb = traffic_limit_bytes // (1024**3) if traffic_limit_bytes > 0 else 0
+            if is_metered_traffic_enabled():
+                traffic_limit_gb = settings.DEFAULT_TRAFFIC_LIMIT_GB
+            else:
+                traffic_limit_gb = traffic_limit_bytes // (1024**3) if traffic_limit_bytes > 0 else 0
 
             used_traffic_bytes = _get_user_traffic_bytes(panel_user)
-            traffic_used_gb = used_traffic_bytes / (1024**3)
+            traffic_used_gb = 0.0 if is_metered_traffic_enabled() else used_traffic_bytes / (1024**3)
 
             active_squads = panel_user.get('activeInternalSquads', [])
             squad_uuids = []
@@ -1838,19 +1842,20 @@ class RemnaWaveService:
                 subscription.status = new_status
                 logger.debug('Обновлен статус подписки', new_status=new_status)
 
-            used_traffic_bytes = _get_user_traffic_bytes(panel_user)
-            traffic_used_gb = used_traffic_bytes / (1024**3)
+            if not is_metered_traffic_enabled():
+                used_traffic_bytes = _get_user_traffic_bytes(panel_user)
+                traffic_used_gb = used_traffic_bytes / (1024**3)
 
-            if abs(subscription.traffic_used_gb - traffic_used_gb) > 0.01:
-                subscription.traffic_used_gb = traffic_used_gb
-                logger.debug('Обновлен использованный трафик', traffic_used_gb=traffic_used_gb)
+                if abs(subscription.traffic_used_gb - traffic_used_gb) > 0.01:
+                    subscription.traffic_used_gb = traffic_used_gb
+                    logger.debug('Обновлен использованный трафик', traffic_used_gb=traffic_used_gb)
 
-            traffic_limit_bytes = panel_user.get('trafficLimitBytes', 0)
-            traffic_limit_gb = traffic_limit_bytes // (1024**3) if traffic_limit_bytes > 0 else 0
+                traffic_limit_bytes = panel_user.get('trafficLimitBytes', 0)
+                traffic_limit_gb = traffic_limit_bytes // (1024**3) if traffic_limit_bytes > 0 else 0
 
-            if subscription.traffic_limit_gb != traffic_limit_gb:
-                subscription.traffic_limit_gb = traffic_limit_gb
-                logger.debug('Обновлен лимит трафика', traffic_limit_gb=traffic_limit_gb)
+                if subscription.traffic_limit_gb != traffic_limit_gb:
+                    subscription.traffic_limit_gb = traffic_limit_gb
+                    logger.debug('Обновлен лимит трафика', traffic_limit_gb=traffic_limit_gb)
 
             device_limit = panel_user.get('hwidDeviceLimit', 1) or 1
             if subscription.device_limit != device_limit:
@@ -1959,9 +1964,7 @@ class RemnaWaveService:
                                     username=username,
                                     expire_at=expire_at,
                                     status=status,
-                                    traffic_limit_bytes=sub.traffic_limit_gb * (1024**3)
-                                    if sub.traffic_limit_gb > 0
-                                    else 0,
+                                    traffic_limit_bytes=panel_traffic_limit_bytes(sub.traffic_limit_gb),
                                     traffic_limit_strategy=TrafficLimitStrategy.MONTH,
                                     telegram_id=user.telegram_id,
                                     email=user.email,

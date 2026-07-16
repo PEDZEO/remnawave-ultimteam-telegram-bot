@@ -1942,6 +1942,17 @@ class Subscription(Base):
         AwareDateTime(), nullable=True
     )  # Дата сброса докупленного трафика (30 дней после первой докупки)
 
+    # Ultima split traffic mode. Remnawave keeps its global user limit unlimited;
+    # the bot measures traffic from a rollout/cycle baseline and controls only the
+    # dedicated metered internal squad.
+    metered_traffic_baseline_bytes = Column(BigInteger, nullable=False, default=0)
+    metered_traffic_last_counter_bytes = Column(BigInteger, nullable=False, default=0)
+    metered_traffic_initialized_at = Column(AwareDateTime(), nullable=True)
+    metered_traffic_last_checked_at = Column(AwareDateTime(), nullable=True)
+    metered_access_blocked = Column(Boolean, nullable=False, default=False)
+    metered_access_blocked_at = Column(AwareDateTime(), nullable=True)
+    metered_warning_percent = Column(Integer, nullable=False, default=0)
+
     subscription_url = Column(String, nullable=True)
     subscription_crypto_link = Column(String, nullable=True)
 

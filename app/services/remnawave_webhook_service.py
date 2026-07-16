@@ -34,6 +34,7 @@ from app.database.crud.user import get_user_by_id, get_user_by_remnawave_uuid, g
 from app.database.models import Subscription, SubscriptionServer, SubscriptionStatus, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
+from app.services.metered_traffic_policy import is_metered_traffic_enabled
 from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 
@@ -680,7 +681,7 @@ class RemnaWaveWebhookService:
 
         # Sync traffic limit
         traffic_limit_bytes = data.get('trafficLimitBytes')
-        if traffic_limit_bytes is not None:
+        if traffic_limit_bytes is not None and not is_metered_traffic_enabled():
             try:
                 new_limit_gb = int(traffic_limit_bytes) // (1024**3)
                 if subscription.traffic_limit_gb != new_limit_gb:
@@ -691,7 +692,7 @@ class RemnaWaveWebhookService:
 
         # Sync used traffic
         used_traffic_bytes = data.get('usedTrafficBytes')
-        if used_traffic_bytes is not None:
+        if used_traffic_bytes is not None and not is_metered_traffic_enabled():
             try:
                 new_used_gb = round(int(used_traffic_bytes) / (1024**3), 2)
                 subscription.traffic_used_gb = new_used_gb

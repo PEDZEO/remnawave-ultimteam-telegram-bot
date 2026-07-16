@@ -8,6 +8,12 @@ from app.config import settings
 from app.database.crud.user import get_user_by_id
 from app.database.models import PromoGroup, Subscription, SubscriptionStatus, User
 from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, RemnaWaveUser, TrafficLimitStrategy, UserStatus
+from app.services.metered_traffic_policy import (
+    is_metered_traffic_enabled,
+    panel_traffic_limit_bytes,
+    reset_metered_cycle,
+    restore_metered_access_if_available,
+)
 from app.utils.pricing_utils import (
     calculate_months_from_days,
     get_remaining_months,
@@ -205,6 +211,9 @@ class SubscriptionService:
 
             user_tag = self._resolve_user_tag(subscription)
 
+            if not reset_traffic:
+                restore_metered_access_if_available(subscription)
+
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
 
@@ -244,7 +253,7 @@ class SubscriptionService:
                         uuid=remnawave_user.uuid,
                         status=UserStatus.ACTIVE,
                         expire_at=subscription.end_date,
-                        traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
+                        traffic_limit_bytes=panel_traffic_limit_bytes(subscription.traffic_limit_gb),
                         traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                         email=user.email,  # Обновляем email в панели RemnaWave
                         description=settings.format_remnawave_user_description(
@@ -268,12 +277,18 @@ class SubscriptionService:
                     updated_user = await api.update_user(**update_kwargs)
 
                     if reset_traffic:
-                        await self._reset_user_traffic(
-                            api,
-                            updated_user.uuid,
-                            user,
-                            reset_reason,
-                        )
+                        if is_metered_traffic_enabled():
+                            reset_metered_cycle(
+                                subscription,
+                                panel_counter_bytes=updated_user.used_traffic_bytes,
+                            )
+                        else:
+                            await self._reset_user_traffic(
+                                api,
+                                updated_user.uuid,
+                                user,
+                                reset_reason,
+                            )
 
                 else:
                     logger.info(
@@ -290,7 +305,7 @@ class SubscriptionService:
                         username=username,
                         expire_at=subscription.end_date,
                         status=UserStatus.ACTIVE,
-                        traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
+                        traffic_limit_bytes=panel_traffic_limit_bytes(subscription.traffic_limit_gb),
                         traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                         telegram_id=user.telegram_id,  # Может быть None для email-пользователей
                         email=user.email,  # Email пользователя для панели RemnaWave
@@ -315,12 +330,18 @@ class SubscriptionService:
                     updated_user = await api.create_user(**create_kwargs)
 
                     if reset_traffic:
-                        await self._reset_user_traffic(
-                            api,
-                            updated_user.uuid,
-                            user,
-                            reset_reason,
-                        )
+                        if is_metered_traffic_enabled():
+                            reset_metered_cycle(
+                                subscription,
+                                panel_counter_bytes=updated_user.used_traffic_bytes,
+                            )
+                        else:
+                            await self._reset_user_traffic(
+                                api,
+                                updated_user.uuid,
+                                user,
+                                reset_reason,
+                            )
 
                 subscription.remnawave_short_uuid = updated_user.short_uuid
                 subscription.subscription_url = updated_user.subscription_url
@@ -384,6 +405,9 @@ class SubscriptionService:
 
             user_tag = self._resolve_user_tag(subscription)
 
+            if not reset_traffic:
+                restore_metered_access_if_available(subscription)
+
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
 
@@ -391,7 +415,7 @@ class SubscriptionService:
                     uuid=user.remnawave_uuid,
                     status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
                     expire_at=subscription.end_date,
-                    traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
+                    traffic_limit_bytes=panel_traffic_limit_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                     email=user.email,  # Обновляем email в панели RemnaWave
                     description=settings.format_remnawave_user_description(
@@ -415,12 +439,18 @@ class SubscriptionService:
                 updated_user = await api.update_user(**update_kwargs)
 
                 if reset_traffic:
-                    await self._reset_user_traffic(
-                        api,
-                        user.remnawave_uuid,
-                        user,
-                        reset_reason,
-                    )
+                    if is_metered_traffic_enabled():
+                        reset_metered_cycle(
+                            subscription,
+                            panel_counter_bytes=updated_user.used_traffic_bytes,
+                        )
+                    else:
+                        await self._reset_user_traffic(
+                            api,
+                            user.remnawave_uuid,
+                            user,
+                            reset_reason,
+                        )
 
                 subscription.subscription_url = updated_user.subscription_url
                 subscription.subscription_crypto_link = updated_user.happ_crypto_link
@@ -572,8 +602,11 @@ class SubscriptionService:
                 if not remnawave_user:
                     return False
 
-                used_gb = self._bytes_to_gb(remnawave_user.used_traffic_bytes)
-                subscription.traffic_used_gb = used_gb
+                if is_metered_traffic_enabled():
+                    used_gb = subscription.traffic_used_gb or 0.0
+                else:
+                    used_gb = self._bytes_to_gb(remnawave_user.used_traffic_bytes)
+                    subscription.traffic_used_gb = used_gb
 
                 await db.commit()
 

@@ -20,6 +20,7 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
+from app.services.metered_traffic_policy import BYTES_PER_GB, is_metered_traffic_enabled
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -4294,6 +4295,31 @@ async def refresh_traffic(
             detail=f'Rate limited. Try again in {TRAFFIC_REFRESH_RATE_WINDOW} seconds.',
             headers={'Retry-After': str(TRAFFIC_REFRESH_RATE_WINDOW)},
         )
+
+    if is_metered_traffic_enabled():
+        used_gb = max(0.0, float(user.subscription.traffic_used_gb or 0.0))
+        limit_gb = max(0, int(user.subscription.traffic_limit_gb or 0))
+        percent = min(100.0, (used_gb / limit_gb) * 100) if limit_gb else 0.0
+        traffic_data = {
+            'traffic_used_bytes': int(used_gb * BYTES_PER_GB),
+            'traffic_used_gb': round(used_gb, 2),
+            'traffic_limit_bytes': limit_gb * BYTES_PER_GB,
+            'traffic_limit_gb': limit_gb,
+            'traffic_used_percent': round(percent, 1),
+            'is_unlimited': limit_gb == 0,
+            'metered_traffic_enabled': True,
+            'metered_access_blocked': bool(user.subscription.metered_access_blocked),
+            'metered_server_label': settings.ULTIMA_METERED_SERVER_LABEL,
+            'standard_traffic_unlimited': True,
+        }
+        traffic_cache_key = cache_key('traffic', user_cache_id)
+        await cache.set(traffic_cache_key, traffic_data, TRAFFIC_CACHE_TTL)
+        return {
+            'success': True,
+            'cached': False,
+            'source': 'metered-monitor',
+            **traffic_data,
+        }
 
     # Fetch traffic from RemnaWave
     try:

@@ -13,6 +13,8 @@ import structlog
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
+from app.services.metered_traffic_policy import is_metered_traffic_enabled
+
 
 logger = structlog.get_logger(__name__)
 
@@ -540,8 +542,12 @@ class RemnaWaveAPI:
             'username': username,
             'status': (normalized_status or UserStatus.ACTIVE).value,
             'expireAt': expire_at.isoformat(),
-            'trafficLimitBytes': traffic_limit_bytes,
-            'trafficLimitStrategy': traffic_limit_strategy.value,
+            'trafficLimitBytes': 0 if is_metered_traffic_enabled() else traffic_limit_bytes,
+            'trafficLimitStrategy': (
+                TrafficLimitStrategy.NO_RESET.value
+                if is_metered_traffic_enabled()
+                else traffic_limit_strategy.value
+            ),
         }
 
         if telegram_id:
@@ -652,9 +658,13 @@ class RemnaWaveAPI:
             normalized_status = self._normalize_mutable_user_status(status, allow_none=True)
             if normalized_status is not None:
                 data['status'] = normalized_status.value
-        if traffic_limit_bytes is not None:
+        if is_metered_traffic_enabled():
+            data['trafficLimitBytes'] = 0
+        elif traffic_limit_bytes is not None:
             data['trafficLimitBytes'] = traffic_limit_bytes
-        if traffic_limit_strategy:
+        if is_metered_traffic_enabled():
+            data['trafficLimitStrategy'] = TrafficLimitStrategy.NO_RESET.value
+        elif traffic_limit_strategy:
             data['trafficLimitStrategy'] = traffic_limit_strategy.value
         if expire_at:
             data['expireAt'] = expire_at.isoformat()
@@ -1074,14 +1084,26 @@ class RemnaWaveAPI:
         response = await self._make_request('GET', '/api/bandwidth-stats/nodes', params=params)
         return response['response']
 
-    async def get_bandwidth_stats_nodes_users(self, node_uuids: list[str]) -> dict[str, Any]:
+    async def get_bandwidth_stats_nodes_users(
+        self,
+        node_uuids: list[str],
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
         if not node_uuids:
             return {'categories': [], 'sparklineData': [], 'topUsers': []}
+
+        params = {}
+        if start_date:
+            params['start'] = start_date
+        if end_date:
+            params['end'] = end_date
 
         response = await self._make_request(
             'POST',
             '/api/bandwidth-stats/nodes/users',
             {'nodesUuids': node_uuids},
+            params=params or None,
         )
         return response['response']
 
