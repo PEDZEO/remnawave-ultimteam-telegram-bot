@@ -544,9 +544,7 @@ class RemnaWaveAPI:
             'expireAt': expire_at.isoformat(),
             'trafficLimitBytes': 0 if is_metered_traffic_enabled() else traffic_limit_bytes,
             'trafficLimitStrategy': (
-                TrafficLimitStrategy.NO_RESET.value
-                if is_metered_traffic_enabled()
-                else traffic_limit_strategy.value
+                TrafficLimitStrategy.NO_RESET.value if is_metered_traffic_enabled() else traffic_limit_strategy.value
             ),
         }
 
@@ -956,6 +954,40 @@ class RemnaWaveAPI:
             if e.status_code == 404:
                 return None
             raise
+
+    async def update_nodes_consumption_multiplier(self, uuids: list[str], multiplier: float) -> bool:
+        """Update traffic accounting multiplier for a group of nodes."""
+        unique_uuids = list(dict.fromkeys(uuid for uuid in uuids if uuid))
+        if not unique_uuids:
+            return True
+
+        payload = {
+            'uuids': unique_uuids,
+            'fields': {'consumptionMultiplier': round(float(multiplier), 1)},
+        }
+        try:
+            response = await self._make_request(
+                'POST',
+                '/api/nodes/bulk-actions/update',
+                payload,
+                quiet_statuses=(404, 405),
+            )
+            return bool(response.get('response', {}).get('eventSent', True))
+        except RemnaWaveAPIError as error:
+            if error.status_code not in (404, 405):
+                raise
+
+        # Compatibility fallback for panel versions without the bulk endpoint.
+        for node_uuid in unique_uuids:
+            await self._make_request(
+                'PATCH',
+                '/api/nodes',
+                {
+                    'uuid': node_uuid,
+                    'consumptionMultiplier': round(float(multiplier), 1),
+                },
+            )
+        return True
 
     async def enable_node(self, uuid: str) -> RemnaWaveNode:
         response = await self._make_request('POST', f'/api/nodes/{uuid}/actions/enable')

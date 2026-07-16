@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import Subscription, User
 from app.services.metered_traffic_service import metered_traffic_service
+from app.services.remnawave_service import remnawave_service
 from app.services.system_settings_service import (
     ReadOnlySettingError,
     bot_configuration_service,
@@ -82,6 +83,18 @@ class SettingUpdateRequest(BaseModel):
     """Request to update setting value."""
 
     value: Any
+
+
+class MeteredTrafficConfigurationUpdate(BaseModel):
+    """Complete split traffic configuration managed from the admin cabinet."""
+
+    enabled: bool
+    squad_uuid: str = ''
+    metered_node_uuids: list[str] = Field(default_factory=list)
+    check_interval_seconds: int = Field(ge=15, le=3600)
+    warning_percent: int = Field(ge=25, le=95)
+    server_label: str = Field(min_length=1, max_length=40)
+    exhausted_message_ru: str = Field(min_length=1, max_length=4096)
 
 
 # ============ Helper Functions ============
@@ -205,6 +218,107 @@ async def _metered_status_payload(db: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def _load_metered_topology() -> tuple[list[Any], list[Any]]:
+    """Load live internal squads and nodes from Remnawave."""
+    if not remnawave_service.is_configured:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            remnawave_service.configuration_error or 'Remnawave API is not configured',
+        )
+
+    try:
+        async with remnawave_service.get_api_client() as api:
+            squads = await api.get_internal_squads()
+            nodes = await api.get_all_nodes()
+    except Exception as error:
+        logger.error('Failed to load Remnawave split traffic topology', error=error)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            'Не удалось загрузить сквады и ноды из Remnawave',
+        ) from error
+
+    return squads, nodes
+
+
+def _normalize_uuid_list(values: list[str], *, field_name: str) -> list[str]:
+    normalized: list[str] = []
+    try:
+        for raw_value in values:
+            stripped = str(raw_value).strip()
+            if not stripped:
+                continue
+            value = str(UUID(stripped))
+            if value not in normalized:
+                normalized.append(value)
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f'{field_name} содержит некорректный UUID') from error
+    return normalized
+
+
+def _serialize_metered_squad(squad: Any) -> dict[str, Any]:
+    return {
+        'uuid': squad.uuid,
+        'name': squad.name,
+        'members_count': int(squad.members_count or 0),
+        'inbounds_count': int(squad.inbounds_count or 0),
+    }
+
+
+def _serialize_metered_node(node: Any) -> dict[str, Any]:
+    return {
+        'uuid': node.uuid,
+        'name': node.name,
+        'address': node.address,
+        'country_code': node.country_code,
+        'is_connected': bool(node.is_connected),
+        'is_disabled': bool(node.is_disabled),
+        'consumption_multiplier': float(node.consumption_multiplier or 0),
+    }
+
+
+async def _metered_configuration_payload(
+    db: AsyncSession,
+    *,
+    topology: tuple[list[Any], list[Any]] | None = None,
+    nodes_updated: int = 0,
+) -> dict[str, Any]:
+    squads, nodes = topology or await _load_metered_topology()
+    configured_nodes = _normalize_uuid_list(
+        str(bot_configuration_service.get_current_value('ULTIMA_METERED_NODE_UUIDS') or '').split(','),
+        field_name='Список нод',
+    )
+    configured_node_set = set(configured_nodes)
+    topology_errors = []
+    for node in nodes:
+        expected = 1.0 if node.uuid in configured_node_set else 0.0
+        actual = float(node.consumption_multiplier or 0)
+        if abs(actual - expected) > 0.001:
+            topology_errors.append(f'{node.name}: сейчас {actual:g}×, требуется {expected:g}×')
+
+    return {
+        'configuration': {
+            'enabled': bool(bot_configuration_service.get_current_value('ULTIMA_METERED_TRAFFIC_ENABLED')),
+            'squad_uuid': str(bot_configuration_service.get_current_value('ULTIMA_METERED_SQUAD_UUID') or ''),
+            'metered_node_uuids': configured_nodes,
+            'check_interval_seconds': int(
+                bot_configuration_service.get_current_value('ULTIMA_METERED_CHECK_INTERVAL_SECONDS') or 60
+            ),
+            'warning_percent': int(bot_configuration_service.get_current_value('ULTIMA_METERED_WARNING_PERCENT') or 80),
+            'server_label': str(
+                bot_configuration_service.get_current_value('ULTIMA_METERED_SERVER_LABEL') or 'Спецсерверы'
+            ),
+            'exhausted_message_ru': str(
+                bot_configuration_service.get_current_value('ULTIMA_METERED_EXHAUSTED_MESSAGE_RU') or ''
+            ),
+        },
+        'status': await _metered_status_payload(db),
+        'squads': sorted((_serialize_metered_squad(squad) for squad in squads), key=lambda item: item['name'].lower()),
+        'nodes': sorted((_serialize_metered_node(node) for node in nodes), key=lambda item: item['name'].lower()),
+        'topology_errors': topology_errors,
+        'nodes_updated': nodes_updated,
+    }
+
+
 def _serialize_definition(definition, include_choices: bool = True) -> SettingDefinition:
     """Serialize setting definition to response model."""
     current = bot_configuration_service.get_current_value(definition.key)
@@ -296,6 +410,118 @@ async def get_metered_traffic_status(
 ):
     """Return runtime state and subscription counters for split traffic mode."""
     return await _metered_status_payload(db)
+
+
+@router.get('/metered-traffic/configuration')
+async def get_metered_traffic_configuration(
+    admin: User = Depends(require_permission('settings:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Return editable split traffic settings with live Remnawave topology."""
+    return await _metered_configuration_payload(db)
+
+
+@router.put('/metered-traffic/configuration')
+async def update_metered_traffic_configuration(
+    payload: MeteredTrafficConfigurationUpdate,
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Validate and apply split traffic settings and node multipliers together."""
+    squads, nodes = await _load_metered_topology()
+
+    squad_uuid = ''
+    if payload.squad_uuid.strip():
+        try:
+            squad_uuid = str(UUID(payload.squad_uuid.strip()))
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Выбран некорректный UUID сквада') from error
+
+    node_uuids = _normalize_uuid_list(payload.metered_node_uuids, field_name='Список тарифицируемых нод')
+    available_squads = {squad.uuid for squad in squads}
+    available_nodes = {node.uuid for node in nodes}
+
+    if squad_uuid and squad_uuid not in available_squads:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Выбранный сквад больше не существует в Remnawave')
+    missing_nodes = set(node_uuids) - available_nodes
+    if missing_nodes:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f'Выбранные ноды больше не существуют: {", ".join(sorted(missing_nodes))}',
+        )
+    if payload.enabled and not squad_uuid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Для включения выберите тарифицируемый сквад')
+    if payload.enabled and not node_uuids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Для включения выберите хотя бы одну тарифицируемую ноду')
+
+    values = {
+        'ULTIMA_METERED_SQUAD_UUID': squad_uuid,
+        'ULTIMA_METERED_NODE_UUIDS': ','.join(node_uuids),
+        'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': payload.check_interval_seconds,
+        'ULTIMA_METERED_WARNING_PERCENT': payload.warning_percent,
+        'ULTIMA_METERED_SERVER_LABEL': payload.server_label,
+        'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU': payload.exhausted_message_ru,
+        'ULTIMA_METERED_TRAFFIC_ENABLED': payload.enabled,
+    }
+    coerced_values = {key: _coerce_value(key, value) for key, value in values.items()}
+
+    metered_node_set = set(node_uuids)
+    nodes_to_meter = [
+        node.uuid
+        for node in nodes
+        if node.uuid in metered_node_set and abs(float(node.consumption_multiplier or 0) - 1.0) > 0.001
+    ]
+    nodes_to_unlimit = [
+        node.uuid
+        for node in nodes
+        if node.uuid not in metered_node_set and abs(float(node.consumption_multiplier or 0)) > 0.001
+    ]
+
+    await metered_traffic_service.stop()
+    try:
+        async with remnawave_service.get_api_client() as api:
+            if nodes_to_meter:
+                if not await api.update_nodes_consumption_multiplier(nodes_to_meter, 1.0):
+                    raise RuntimeError('Remnawave rejected metered node multiplier update')
+            if nodes_to_unlimit:
+                if not await api.update_nodes_consumption_multiplier(nodes_to_unlimit, 0.0):
+                    raise RuntimeError('Remnawave rejected unlimited node multiplier update')
+
+        for key, value in coerced_values.items():
+            await bot_configuration_service.set_value(db, key, value)
+        await db.commit()
+    except Exception as error:
+        await db.rollback()
+        logger.error(
+            'Failed to update split traffic configuration',
+            telegram_id=admin.telegram_id,
+            error=error,
+        )
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            'Не удалось применить конфигурацию раздельного трафика',
+        ) from error
+
+    for node in nodes:
+        node.consumption_multiplier = 1.0 if node.uuid in metered_node_set else 0.0
+
+    if metered_traffic_service.is_enabled():
+        await metered_traffic_service.start()
+
+    nodes_updated = len(nodes_to_meter) + len(nodes_to_unlimit)
+    logger.info(
+        'Admin updated split traffic configuration',
+        telegram_id=admin.telegram_id,
+        enabled=payload.enabled,
+        squad_uuid=squad_uuid,
+        metered_nodes=len(node_uuids),
+        nodes_updated=nodes_updated,
+    )
+    return await _metered_configuration_payload(
+        db,
+        topology=(squads, nodes),
+        nodes_updated=nodes_updated,
+    )
 
 
 @router.post('/metered-traffic/run')

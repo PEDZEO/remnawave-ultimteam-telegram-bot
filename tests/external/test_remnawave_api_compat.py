@@ -72,6 +72,70 @@ async def test_remove_users_from_squad_falls_back_to_legacy_post(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_update_node_multipliers_uses_bulk_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = RemnaWaveAPI('https://panel.example', 'token')
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def fake_make_request(
+        method: str,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        quiet_statuses: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        calls.append((method, endpoint, data))
+        return {'response': {'eventSent': True}}
+
+    monkeypatch.setattr(api, '_make_request', fake_make_request)
+
+    assert await api.update_nodes_consumption_multiplier(['node-1', 'node-1', 'node-2'], 1) is True
+    assert calls == [
+        (
+            'POST',
+            '/api/nodes/bulk-actions/update',
+            {
+                'uuids': ['node-1', 'node-2'],
+                'fields': {'consumptionMultiplier': 1.0},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_node_multipliers_falls_back_to_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = RemnaWaveAPI('https://panel.example', 'token')
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def fake_make_request(
+        method: str,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        quiet_statuses: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        calls.append((method, endpoint, data))
+        if endpoint == '/api/nodes/bulk-actions/update':
+            raise RemnaWaveAPIError('Not found', status_code=404)
+        return {'response': {}}
+
+    monkeypatch.setattr(api, '_make_request', fake_make_request)
+
+    assert await api.update_nodes_consumption_multiplier(['node-1', 'node-2'], 0) is True
+    assert calls == [
+        (
+            'POST',
+            '/api/nodes/bulk-actions/update',
+            {
+                'uuids': ['node-1', 'node-2'],
+                'fields': {'consumptionMultiplier': 0.0},
+            },
+        ),
+        ('PATCH', '/api/nodes', {'uuid': 'node-1', 'consumptionMultiplier': 0.0}),
+        ('PATCH', '/api/nodes', {'uuid': 'node-2', 'consumptionMultiplier': 0.0}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_bandwidth_stats_nodes_users_uses_new_multi_node_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
