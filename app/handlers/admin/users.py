@@ -3872,6 +3872,9 @@ async def _update_user_devices(db: AsyncSession, user_id: int, devices: int, adm
         subscription = user.subscription
         old_devices = subscription.device_limit
         subscription.device_limit = devices
+        from app.services.device_traffic_bonus import sync_device_traffic_bonus
+
+        await sync_device_traffic_bonus(db, subscription)
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()
@@ -3890,6 +3893,11 @@ async def _update_user_devices(db: AsyncSession, user_id: int, devices: int, adm
                 logger.info('✅ Обновлен лимит устройств в RemnaWave для пользователя', telegram_id=user.telegram_id)
             except Exception as rw_error:
                 logger.error('❌ Ошибка обновления лимита устройств в RemnaWave', rw_error=rw_error)
+
+        try:
+            await SubscriptionService().update_remnawave_user(db, subscription)
+        except Exception as sync_error:
+            logger.error('Failed to sync device traffic bonus with Remnawave', sync_error=sync_error)
 
         logger.info(
             'Админ изменил лимит устройств пользователя',
@@ -5334,6 +5342,14 @@ async def confirm_admin_tariff_change(callback: types.CallbackQuery, db_user: Us
         await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
         subscription.purchased_traffic_gb = 0
         subscription.traffic_reset_at = None
+        from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
+
+        rebuild_traffic_with_device_bonus(
+            subscription,
+            tariff,
+            tariff.traffic_limit_gb,
+            preserve_purchased_traffic=False,
+        )
 
         # Сброс использованного трафика по админ-настройке
         if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:

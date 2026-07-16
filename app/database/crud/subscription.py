@@ -15,11 +15,17 @@ from app.database.models import (
     Subscription,
     SubscriptionServer,
     SubscriptionStatus,
+    Tariff,
     Transaction,
     TransactionType,
     User,
     UserPromoGroup,
     UserStatus,
+)
+from app.services.device_traffic_bonus import (
+    apply_device_traffic_bonus,
+    rebuild_traffic_with_device_bonus,
+    sync_device_traffic_bonus,
 )
 from app.utils.pricing_utils import calculate_months_from_days, get_remaining_months
 from app.utils.timezone import format_local_datetime
@@ -91,16 +97,19 @@ def get_subscription_base_traffic_limit(subscription: Subscription | None) -> in
         return 0
 
     purchased_traffic = max(0, int(getattr(subscription, 'purchased_traffic_gb', 0) or 0))
-    if purchased_traffic <= 0:
+    device_bonus = max(0, int(getattr(subscription, 'device_bonus_traffic_gb', 0) or 0))
+    excluded_traffic = purchased_traffic + device_bonus
+    if excluded_traffic <= 0:
         return total_limit
 
-    base_limit = total_limit - purchased_traffic
+    base_limit = total_limit - excluded_traffic
     if base_limit <= 0:
         logger.warning(
             'Purchased traffic is not below total limit; falling back to total traffic as base',
             subscription_id=getattr(subscription, 'id', None),
             traffic_limit_gb=total_limit,
             purchased_traffic_gb=purchased_traffic,
+            device_bonus_traffic_gb=device_bonus,
         )
         return total_limit
 
@@ -218,6 +227,10 @@ async def create_trial_subscription(
         tariff_id=tariff_id,
     )
 
+    if tariff_id:
+        tariff = await db.get(Tariff, tariff_id)
+        apply_device_traffic_bonus(subscription, tariff)
+
     db.add(subscription)
     await db.commit()
     await db.refresh(subscription)
@@ -278,6 +291,10 @@ async def create_paid_subscription(
         autopay_days_before=settings.DEFAULT_AUTOPAY_DAYS_BEFORE,
         tariff_id=tariff_id,
     )
+
+    if tariff_id:
+        tariff = await db.get(Tariff, tariff_id)
+        apply_device_traffic_bonus(subscription, tariff)
 
     db.add(subscription)
     await db.commit()
@@ -351,6 +368,7 @@ async def replace_subscription(
     subscription.traffic_limit_gb = traffic_limit_gb
     subscription.traffic_used_gb = 0.0
     subscription.purchased_traffic_gb = 0  # Сбрасываем докупленный трафик при замене подписки
+    subscription.device_bonus_traffic_gb = 0
     subscription.traffic_reset_at = None  # Сбрасываем дату сброса трафика
     subscription.device_limit = device_limit
     subscription.connected_squads = list(new_squads)
@@ -439,6 +457,8 @@ async def extend_subscription(
     # Определяем, происходит ли СМЕНА тарифа (а не продление того же)
     # Включает переход из классического режима (tariff_id=None) в тарифный
     is_tariff_change = tariff_id is not None and (subscription.tariff_id is None or tariff_id != subscription.tariff_id)
+    target_tariff_id = tariff_id if tariff_id is not None else subscription.tariff_id
+    target_tariff = await db.get(Tariff, target_tariff_id) if target_tariff_id else None
 
     if is_tariff_change:
         logger.info('🔄 Обнаружена СМЕНА тарифа: →', tariff_id=subscription.tariff_id, tariff_id_2=tariff_id)
@@ -536,6 +556,7 @@ async def extend_subscription(
 
             await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
             subscription.purchased_traffic_gb = 0
+            subscription.device_bonus_traffic_gb = 0
             subscription.traffic_reset_at = None
             logger.info(
                 '📊 Обновлен лимит трафика: ГБ → ГБ (смена тарифа, докупки сброшены)',
@@ -546,6 +567,7 @@ async def extend_subscription(
             # При ПРОДЛЕНИИ того же тарифа — сохраняем докупленный трафик
             purchased = subscription.purchased_traffic_gb or 0
             subscription.traffic_limit_gb = traffic_limit_gb + purchased
+            subscription.device_bonus_traffic_gb = 0
             logger.info(
                 '📊 Обновлен лимит трафика: ГБ → ГБ (докупки сохранены: ГБ)',
                 old_traffic=old_traffic,
@@ -567,6 +589,17 @@ async def extend_subscription(
         old_devices = subscription.device_limit
         subscription.device_limit = device_limit
         logger.info('📱 Обновлен лимит устройств: →', old_devices=old_devices, device_limit=device_limit)
+
+    if target_tariff is not None:
+        if traffic_limit_gb is not None:
+            rebuild_traffic_with_device_bonus(
+                subscription,
+                target_tariff,
+                traffic_limit_gb,
+                preserve_purchased_traffic=not is_tariff_change,
+            )
+        else:
+            apply_device_traffic_bonus(subscription, target_tariff)
 
     if connected_squads is not None:
         old_squads = subscription.connected_squads
@@ -711,6 +744,7 @@ async def add_subscription_devices(db: AsyncSession, subscription: Subscription,
         new_limit = max_devices
 
     subscription.device_limit = new_limit
+    await sync_device_traffic_bonus(db, subscription)
     subscription.updated_at = datetime.now(UTC)
 
     await db.commit()

@@ -600,6 +600,9 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                 return
 
         subscription.device_limit = new_devices_count
+        from app.services.device_traffic_bonus import sync_device_traffic_bonus
+
+        await sync_device_traffic_bonus(db, subscription, tariff)
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()
@@ -1278,6 +1281,9 @@ async def confirm_add_devices(callback: types.CallbackQuery, db_user: User, db: 
             return
 
         subscription.device_limit = actual_new
+        from app.services.device_traffic_bonus import sync_device_traffic_bonus
+
+        await sync_device_traffic_bonus(db, subscription)
         subscription.updated_at = datetime.now(UTC)
         await db.commit()
 

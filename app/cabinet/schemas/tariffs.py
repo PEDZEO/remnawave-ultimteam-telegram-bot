@@ -61,6 +61,7 @@ class TariffListItem(BaseModel):
     special_servers_enabled: bool = False
     traffic_limit_gb: int
     device_limit: int
+    device_traffic_gb: int = 0
     tier_level: int
     display_order: int
     servers_count: int
@@ -95,6 +96,7 @@ class TariffDetailResponse(BaseModel):
     device_limit: int
     device_price_kopeks: int | None = None
     max_device_limit: int | None = None
+    device_traffic_gb: int = 0
     tier_level: int
     display_order: int
     period_prices: list[PeriodPrice]
@@ -142,6 +144,7 @@ class TariffCreateRequest(BaseModel):
     device_limit: int = Field(1, ge=1)
     device_price_kopeks: int | None = Field(None, ge=0)
     max_device_limit: int | None = Field(None, ge=1)
+    device_traffic_gb: int = Field(0, ge=0, le=100000)
     tier_level: int = Field(1, ge=1, le=10)
     period_prices: list[PeriodPrice] = Field(default_factory=list)
     allowed_squads: list[str] = Field(default_factory=list, description='Server UUIDs')
@@ -184,6 +187,7 @@ class TariffUpdateRequest(BaseModel):
     device_limit: int | None = Field(None, ge=1)
     device_price_kopeks: int | None = Field(None, ge=0)
     max_device_limit: int | None = Field(None, ge=1)
+    device_traffic_gb: int | None = Field(None, ge=0, le=100000)
     tier_level: int | None = Field(None, ge=1, le=10)
     display_order: int | None = Field(None, ge=0)
     period_prices: list[PeriodPrice] | None = None

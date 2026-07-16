@@ -9,6 +9,7 @@ import pytest
 from app.database.crud import subscription as subscription_crud
 from app.database.crud.subscription import (
     add_subscription_traffic,
+    create_paid_subscription,
     extend_subscription,
     get_subscription_base_traffic_limit,
     get_subscription_total_with_purchased_traffic,
@@ -22,6 +23,9 @@ class _FakeSession:
         self.flush = AsyncMock()
         self.refresh = AsyncMock()
         self.execute = AsyncMock(return_value=_FakeExecuteResult())
+        self.get = AsyncMock(
+            return_value=SimpleNamespace(device_limit=2, device_traffic_gb=0, is_daily=False)
+        )
         self.added: list[object] = []
 
     def add(self, obj: object) -> None:
@@ -47,6 +51,17 @@ def test_subscription_base_traffic_excludes_active_topups() -> None:
     assert get_subscription_total_with_purchased_traffic(100, subscription) == 120
 
 
+def test_subscription_base_traffic_excludes_device_bonus() -> None:
+    subscription = SimpleNamespace(
+        id=10,
+        traffic_limit_gb=470,
+        purchased_traffic_gb=20,
+        device_bonus_traffic_gb=350,
+    )
+
+    assert get_subscription_base_traffic_limit(subscription) == 100
+
+
 def test_subscription_base_traffic_falls_back_for_inconsistent_topups() -> None:
     subscription = SimpleNamespace(
         id=2,
@@ -55,6 +70,24 @@ def test_subscription_base_traffic_falls_back_for_inconsistent_topups() -> None:
     )
 
     assert get_subscription_base_traffic_limit(subscription) == 20
+
+
+@pytest.mark.asyncio
+async def test_create_paid_subscription_applies_device_bonus() -> None:
+    db = _FakeSession()
+    db.get.return_value = SimpleNamespace(device_limit=2, device_traffic_gb=35)
+
+    subscription = await create_paid_subscription(
+        db,
+        user_id=20,
+        duration_days=30,
+        traffic_limit_gb=35,
+        device_limit=12,
+        tariff_id=10,
+    )
+
+    assert subscription.traffic_limit_gb == 385
+    assert subscription.device_bonus_traffic_gb == 350
 
 
 @pytest.mark.asyncio
@@ -96,6 +129,41 @@ async def test_extending_subscription_does_not_make_topup_permanent(monkeypatch:
     assert subscription.traffic_reset_at is not None
     db.commit.assert_awaited()
     db.refresh.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extending_subscription_rebuilds_device_bonus_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def clear_notifications_stub(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(subscription_crud, 'clear_notifications', clear_notifications_stub)
+
+    now = datetime.now(UTC)
+    subscription = SimpleNamespace(
+        id=31,
+        user_id=310,
+        status=SubscriptionStatus.ACTIVE.value,
+        start_date=now - timedelta(days=10),
+        end_date=now + timedelta(days=20),
+        tariff_id=10,
+        is_trial=False,
+        traffic_limit_gb=405,
+        purchased_traffic_gb=20,
+        device_bonus_traffic_gb=350,
+        traffic_reset_at=now + timedelta(days=30),
+        traffic_used_gb=5.0,
+        device_limit=12,
+        connected_squads=[],
+        updated_at=None,
+    )
+    db = _FakeSession()
+    db.get.return_value = SimpleNamespace(device_limit=2, device_traffic_gb=35, is_daily=False)
+
+    await extend_subscription(db, subscription, 30, tariff_id=10, traffic_limit_gb=35)
+
+    assert subscription.traffic_limit_gb == 405
+    assert subscription.device_bonus_traffic_gb == 350
+    assert subscription.purchased_traffic_gb == 20
 
 
 @pytest.mark.asyncio

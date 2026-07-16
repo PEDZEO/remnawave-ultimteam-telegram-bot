@@ -1356,6 +1356,14 @@ async def confirm_daily_tariff_purchase(
             )
             existing_subscription.purchased_traffic_gb = 0
             existing_subscription.traffic_reset_at = None
+            from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
+
+            rebuild_traffic_with_device_bonus(
+                existing_subscription,
+                tariff,
+                tariff.traffic_limit_gb,
+                preserve_purchased_traffic=False,
+            )
 
             await db.commit()
             await db.refresh(existing_subscription)
@@ -2480,6 +2488,14 @@ async def confirm_daily_tariff_switch(
         await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
         subscription.purchased_traffic_gb = 0
         subscription.traffic_reset_at = None
+        from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
+
+        rebuild_traffic_with_device_bonus(
+            subscription,
+            tariff,
+            tariff.traffic_limit_gb,
+            preserve_purchased_traffic=False,
+        )
 
         if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
             subscription.traffic_used_gb = 0.0
@@ -3048,6 +3064,14 @@ async def confirm_instant_switch(
         await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
         subscription.purchased_traffic_gb = 0
         subscription.traffic_reset_at = None
+        from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
+
+        rebuild_traffic_with_device_bonus(
+            subscription,
+            new_tariff,
+            new_tariff.traffic_limit_gb,
+            preserve_purchased_traffic=False,
+        )
 
         if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
             subscription.traffic_used_gb = 0.0

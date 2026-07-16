@@ -279,7 +279,9 @@ class PricingEngine:
         # --- Traffic (monthly × months, with traffic discount) ---
         traffic_limit_gb = subscription.traffic_limit_gb or 0
         purchased_traffic_gb = subscription.purchased_traffic_gb or 0
-        traffic_price_per_month = self._calculate_traffic_price(traffic_limit_gb, purchased_traffic_gb)
+        device_bonus_traffic_gb = getattr(subscription, 'device_bonus_traffic_gb', 0) or 0
+        non_base_traffic_gb = purchased_traffic_gb + device_bonus_traffic_gb
+        traffic_price_per_month = self._calculate_traffic_price(traffic_limit_gb, non_base_traffic_gb)
         discounted_traffic_per_month = self.apply_discount(traffic_price_per_month, traffic_pct)
         traffic_price = discounted_traffic_per_month * months
 
@@ -312,8 +314,9 @@ class PricingEngine:
             'servers': server_details,
             'servers_individual_prices': [d['price'] * months for d in server_details],
             'server_ids': connected_squads,
-            'base_traffic_gb': max(0, traffic_limit_gb - purchased_traffic_gb),
+            'base_traffic_gb': max(0, traffic_limit_gb - non_base_traffic_gb),
             'purchased_traffic_gb': purchased_traffic_gb,
+            'device_bonus_traffic_gb': device_bonus_traffic_gb,
             'extra_devices': extra_devices,
             'group_discount_pct': {
                 'period': period_pct,

@@ -1535,6 +1535,7 @@ class Tariff(Base):
         Integer, nullable=True, default=None
     )  # Цена за доп. устройство (None = нельзя докупить)
     max_device_limit = Column(Integer, nullable=True, default=None)  # Макс. устройств (None = без ограничений)
+    device_traffic_gb = Column(Integer, nullable=False, default=0, server_default='0')
 
     # Сквады (серверы) доступные в тарифе
     allowed_squads = Column(JSON, default=list)  # список UUID сквадов
@@ -1939,6 +1940,7 @@ class Subscription(Base):
     traffic_limit_gb = Column(Integer, default=0)
     traffic_used_gb = Column(Float, default=0.0)
     purchased_traffic_gb = Column(Integer, default=0)  # Докупленный трафик
+    device_bonus_traffic_gb = Column(Integer, nullable=False, default=0, server_default='0')
     traffic_reset_at = Column(
         AwareDateTime(), nullable=True
     )  # Дата сброса докупленного трафика (30 дней после первой докупки)

@@ -20,6 +20,7 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
+from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus, sync_device_traffic_bonus
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
     build_subscription_squads,
@@ -945,7 +946,12 @@ async def purchase_devices_legacy(
 
     # Add devices (under lock)
     subscription.device_limit = actual_new
+    await sync_device_traffic_bonus(db, subscription)
     await db.commit()
+    try:
+        await SubscriptionService().update_remnawave_user(db, subscription)
+    except Exception as sync_error:
+        logger.error('Failed to sync device purchase with Remnawave', error=sync_error)
     await db.refresh(user)
 
     # Отправляем уведомление админам
@@ -2280,6 +2286,7 @@ async def purchase_devices(
 
         # Increase device limit (under lock)
         subscription.device_limit = actual_new
+        await sync_device_traffic_bonus(db, subscription, tariff)
         await db.commit()
         await db.refresh(subscription)
 
@@ -3489,6 +3496,7 @@ async def reduce_devices(
 
     # Update subscription
     subscription.device_limit = new_device_limit
+    await sync_device_traffic_bonus(db, subscription, tariff)
     subscription.updated_at = datetime.now(UTC)
     await db.commit()
 
@@ -3931,6 +3939,12 @@ async def switch_tariff(
         old_tariff_device_limit=current_tariff.device_limit if current_tariff else None,
         new_tariff_device_limit=new_tariff.device_limit,
         max_device_limit=new_tariff.max_device_limit,
+    )
+    rebuild_traffic_with_device_bonus(
+        subscription,
+        new_tariff,
+        new_tariff.traffic_limit_gb,
+        preserve_purchased_traffic=False,
     )
     subscription.connected_squads = new_tariff.allowed_squads or []
 

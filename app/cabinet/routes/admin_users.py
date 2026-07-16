@@ -1113,6 +1113,14 @@ async def update_user_subscription(
         await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
         subscription.purchased_traffic_gb = 0
         subscription.traffic_reset_at = None
+        from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
+
+        rebuild_traffic_with_device_bonus(
+            subscription,
+            tariff,
+            tariff.traffic_limit_gb,
+            preserve_purchased_traffic=False,
+        )
 
         if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
             subscription.traffic_used_gb = 0.0
@@ -1355,6 +1363,9 @@ async def update_user_subscription(
             )
 
         subscription.device_limit = request.device_limit
+        from app.services.device_traffic_bonus import sync_device_traffic_bonus
+
+        await sync_device_traffic_bonus(db, subscription)
         await db.commit()
         await db.refresh(subscription)
 

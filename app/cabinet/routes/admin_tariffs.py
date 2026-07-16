@@ -31,6 +31,7 @@ from app.database.models import (
     TransactionType,
     User,
 )
+from app.services.device_traffic_bonus import calculate_device_traffic_bonus
 from app.services.metered_traffic_policy import (
     build_subscription_squads,
     disable_metered_access,
@@ -73,9 +74,22 @@ def _gb_to_bytes(gb: int | None) -> int:
     return int(gb) * 1024 * 1024 * 1024
 
 
-def _resolve_tariff_apply_traffic_limit(tariff: Tariff, subscription: Subscription) -> int:
+def _resolve_tariff_apply_traffic_limit(
+    tariff: Tariff,
+    subscription: Subscription,
+    *,
+    target_device_limit: int | None = None,
+) -> tuple[int, int]:
     """Return the effective subscription traffic limit after applying tariff base traffic."""
-    return get_subscription_total_with_purchased_traffic(tariff.traffic_limit_gb, subscription)
+    if not tariff.traffic_limit_gb:
+        return 0, 0
+
+    device_bonus = calculate_device_traffic_bonus(
+        tariff,
+        target_device_limit if target_device_limit is not None else subscription.device_limit,
+    )
+    total = get_subscription_total_with_purchased_traffic(tariff.traffic_limit_gb, subscription) + device_bonus
+    return total, device_bonus
 
 
 def _resolve_tariff_apply_device_limit(tariff: Tariff, subscription: Subscription) -> int:
@@ -94,6 +108,7 @@ def _apply_tariff_limits_to_subscription(
     subscription: Subscription,
     *,
     target_traffic_limit: int,
+    target_device_bonus: int,
     target_device_limit: int | None,
     subscription_url: str | None,
     crypto_link: str | None,
@@ -102,6 +117,7 @@ def _apply_tariff_limits_to_subscription(
 ) -> None:
     """Persist tariff limits, keeping purchased device slots unless explicitly requested."""
     subscription.traffic_limit_gb = target_traffic_limit
+    subscription.device_bonus_traffic_gb = target_device_bonus
     if reset_traffic_usage:
         subscription.traffic_used_gb = 0.0
     if update_device_limit and target_device_limit is not None:
@@ -198,6 +214,7 @@ async def list_tariffs(
                 special_servers_enabled=tariff.special_servers_enabled,
                 traffic_limit_gb=tariff.traffic_limit_gb,
                 device_limit=tariff.device_limit,
+                device_traffic_gb=tariff.device_traffic_gb,
                 tier_level=tariff.tier_level,
                 display_order=tariff.display_order,
                 servers_count=len(tariff.allowed_squads or []),
@@ -287,6 +304,7 @@ async def get_tariff(
         device_limit=tariff.device_limit,
         device_price_kopeks=tariff.device_price_kopeks,
         max_device_limit=tariff.max_device_limit,
+        device_traffic_gb=tariff.device_traffic_gb,
         tier_level=tariff.tier_level,
         display_order=tariff.display_order,
         period_prices=_period_prices_to_list(tariff.period_prices),
@@ -348,6 +366,7 @@ async def create_new_tariff(
         device_limit=request.device_limit,
         device_price_kopeks=request.device_price_kopeks,
         max_device_limit=request.max_device_limit,
+        device_traffic_gb=request.device_traffic_gb,
         tier_level=request.tier_level,
         period_prices=period_prices_dict,
         allowed_squads=request.allowed_squads,
@@ -429,6 +448,8 @@ async def update_existing_tariff(
         updates['device_price_kopeks'] = request.device_price_kopeks
     if request.max_device_limit is not None:
         updates['max_device_limit'] = request.max_device_limit
+    if request.device_traffic_gb is not None:
+        updates['device_traffic_gb'] = request.device_traffic_gb
     if request.tier_level is not None:
         updates['tier_level'] = request.tier_level
     if request.display_order is not None:
@@ -743,7 +764,7 @@ async def apply_tariff_limits_to_active_subscriptions(
     consecutive_failures = 0
     aborted = False
     errors: list[str] = []
-    successful_updates: dict[int, tuple[int, int | None, str | None, str | None, bool]] = {}
+    successful_updates: dict[int, tuple[int, int, int | None, str | None, str | None, bool]] = {}
     traffic_strategy = get_traffic_reset_strategy(tariff)
 
     try:
@@ -765,7 +786,6 @@ async def apply_tariff_limits_to_active_subscriptions(
                         errors.append(f'user_id={sub.user_id}: RemnaWave UUID is missing')
                     return
 
-                target_traffic_limit = _resolve_tariff_apply_traffic_limit(tariff, sub)
                 target_device_limit: int | None = None
                 hwid_limit: int | None = None
                 if update_device_limit:
@@ -774,6 +794,11 @@ async def apply_tariff_limits_to_active_subscriptions(
                     sub.device_limit = target_device_limit
                     hwid_limit = resolve_hwid_device_limit_for_payload(sub)
                     sub.device_limit = previous_device_limit
+                target_traffic_limit, target_device_bonus = _resolve_tariff_apply_traffic_limit(
+                    tariff,
+                    sub,
+                    target_device_limit=target_device_limit,
+                )
 
                 async with semaphore:
                     if aborted:
@@ -812,6 +837,7 @@ async def apply_tariff_limits_to_active_subscriptions(
                                 )
                         successful_updates[sub.id] = (
                             target_traffic_limit,
+                            target_device_bonus,
                             target_device_limit,
                             updated_user.subscription_url,
                             updated_user.happ_crypto_link,
@@ -869,10 +895,18 @@ async def apply_tariff_limits_to_active_subscriptions(
         if not update_data:
             continue
 
-        target_traffic_limit, target_device_limit, subscription_url, crypto_link, traffic_was_reset = update_data
+        (
+            target_traffic_limit,
+            target_device_bonus,
+            target_device_limit,
+            subscription_url,
+            crypto_link,
+            traffic_was_reset,
+        ) = update_data
         _apply_tariff_limits_to_subscription(
             sub,
             target_traffic_limit=target_traffic_limit,
+            target_device_bonus=target_device_bonus,
             target_device_limit=target_device_limit,
             subscription_url=subscription_url,
             crypto_link=crypto_link,

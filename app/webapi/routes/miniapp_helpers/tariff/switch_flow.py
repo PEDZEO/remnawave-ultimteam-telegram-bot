@@ -109,6 +109,7 @@ async def apply_tariff_switch_to_subscription(
     logger,
 ) -> None:
     from app.database.crud.subscription import calc_device_limit_on_tariff_switch
+    from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus
 
     squads = await resolve_tariff_squads(db, new_tariff)
 
@@ -124,6 +125,12 @@ async def apply_tariff_switch_to_subscription(
     await db.execute(sql_delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
     subscription.purchased_traffic_gb = 0
     subscription.traffic_reset_at = None
+    rebuild_traffic_with_device_bonus(
+        subscription,
+        new_tariff,
+        new_tariff.traffic_limit_gb,
+        preserve_purchased_traffic=False,
+    )
     if settings.RESET_TRAFFIC_ON_TARIFF_SWITCH:
         subscription.traffic_used_gb = 0.0
 

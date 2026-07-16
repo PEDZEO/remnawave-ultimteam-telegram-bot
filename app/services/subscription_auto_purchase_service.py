@@ -19,6 +19,7 @@ from app.database.crud.user import get_user_by_id, subtract_user_balance
 from app.database.models import Subscription, TransactionType, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
+from app.services.device_traffic_bonus import sync_device_traffic_bonus
 from app.services.subscription_checkout_service import clear_subscription_checkout_draft
 from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
@@ -1304,6 +1305,7 @@ async def _auto_add_devices(
 
     # Добавляем устройства (under lock)
     subscription.device_limit = new_device_limit
+    await sync_device_traffic_bonus(db, subscription)
 
     try:
         await db.commit()

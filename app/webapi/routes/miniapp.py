@@ -31,9 +31,12 @@ from app.database.crud.transaction import (
 )
 from app.database.crud.user import get_user_by_telegram_id, subtract_user_balance
 from app.database.models import (
+    Subscription,
     Transaction,
     TransactionType,
+    User,
 )
+from app.services.device_traffic_bonus import sync_device_traffic_bonus
 from app.services.faq_service import FaqService
 from app.services.maintenance_service import maintenance_service
 from app.services.payment_service import PaymentService, get_wata_payment_by_link_id
@@ -4439,6 +4442,7 @@ async def update_subscription_devices_endpoint(
             )
 
     subscription.device_limit = new_devices
+    await sync_device_traffic_bonus(db, subscription)
     await finalize_subscription_update(
         db,
         user,
