@@ -1,10 +1,60 @@
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from app.config import settings
+from app.external.remnawave_api import UserStatus
+from app.services.metered_traffic_policy import BYTES_PER_GB
 from app.services.metered_traffic_service import MeteredTrafficService
+
+
+METERED_SQUAD_UUID = '11111111-1111-1111-1111-111111111111'
+STANDARD_SQUAD_UUID = '22222222-2222-2222-2222-222222222222'
+
+
+@pytest.fixture
+def metered_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_TRAFFIC_ENABLED', True)
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_SQUAD_UUID', METERED_SQUAD_UUID)
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_UUIDS', '33333333-3333-3333-3333-333333333333')
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_WARNING_PERCENT', 80)
+
+
+def _subscription(**overrides: Any) -> SimpleNamespace:
+    values = {
+        'connected_squads': [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID],
+        'traffic_limit_gb': 100,
+        'traffic_used_gb': 84.0,
+        'metered_traffic_baseline_bytes': 0,
+        'metered_traffic_last_counter_bytes': 84 * BYTES_PER_GB,
+        'metered_traffic_initialized_at': datetime.now(UTC),
+        'metered_traffic_last_checked_at': datetime.now(UTC),
+        'metered_access_blocked': False,
+        'metered_access_blocked_at': None,
+        'metered_warning_percent': 80,
+        'tariff': SimpleNamespace(special_servers_enabled=True),
+        'user': SimpleNamespace(notification_settings={}),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _panel_user(**overrides: Any) -> SimpleNamespace:
+    values = {
+        'uuid': 'panel-user',
+        'used_traffic_bytes': 85 * BYTES_PER_GB,
+        'active_internal_squads': [
+            {'uuid': STANDARD_SQUAD_UUID},
+            {'uuid': METERED_SQUAD_UUID},
+        ],
+        'traffic_limit_bytes': 0,
+        'status': UserStatus.ACTIVE,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.mark.asyncio
@@ -118,3 +168,59 @@ def test_loop_delay_keeps_cadence_without_busy_looping(
     expected_delay: float,
 ) -> None:
     assert MeteredTrafficService._calculate_loop_delay(interval_seconds, elapsed_seconds) == expected_delay
+
+
+def test_fast_path_updates_healthy_usage_without_repeating_warning(metered_mode: None) -> None:
+    service = MeteredTrafficService()
+    subscription = _subscription()
+    panel_user = _panel_user()
+
+    assert service._requires_individual_processing(subscription, panel_user) is False
+
+    result = service._apply_fast_path(subscription, panel_user, now=datetime.now(UTC))
+
+    assert result['warned'] is False
+    assert subscription.traffic_used_gb == 85.0
+    assert subscription.metered_warning_percent == 80
+
+
+def test_fast_path_defers_new_warning_and_panel_reconciliation(metered_mode: None) -> None:
+    service = MeteredTrafficService()
+
+    assert (
+        service._requires_individual_processing(
+            _subscription(metered_warning_percent=0),
+            _panel_user(),
+        )
+        is True
+    )
+    assert (
+        service._requires_individual_processing(
+            _subscription(),
+            _panel_user(active_internal_squads=[{'uuid': STANDARD_SQUAD_UUID}]),
+        )
+        is True
+    )
+
+
+def test_fast_path_keeps_exhaustion_timestamp_stable(metered_mode: None) -> None:
+    service = MeteredTrafficService()
+    blocked_at = datetime.now(UTC)
+    subscription = _subscription(
+        connected_squads=[STANDARD_SQUAD_UUID],
+        traffic_used_gb=100.0,
+        metered_traffic_last_counter_bytes=100 * BYTES_PER_GB,
+        metered_access_blocked=True,
+        metered_access_blocked_at=blocked_at,
+        metered_warning_percent=100,
+    )
+    panel_user = _panel_user(
+        used_traffic_bytes=101 * BYTES_PER_GB,
+        active_internal_squads=[{'uuid': STANDARD_SQUAD_UUID}],
+    )
+
+    assert service._requires_individual_processing(subscription, panel_user) is False
+    service._apply_fast_path(subscription, panel_user, now=datetime.now(UTC))
+
+    assert subscription.metered_access_blocked_at == blocked_at
+    assert subscription.traffic_used_gb == 101.0

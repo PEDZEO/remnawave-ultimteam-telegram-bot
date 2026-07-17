@@ -278,13 +278,16 @@ def restore_metered_access_if_available(subscription: Any) -> bool:
         _add_squad(subscription, squad_uuid)
     subscription.metered_access_blocked = False
     subscription.metered_access_blocked_at = None
-    subscription.metered_warning_percent = 0
+    if was_blocked or was_missing:
+        subscription.metered_warning_percent = 0
     return was_blocked or was_missing
 
 
 def block_metered_access(subscription: Any) -> None:
+    was_blocked = bool(getattr(subscription, 'metered_access_blocked', False))
     for squad_uuid in get_metered_squad_uuids():
         _remove_squad(subscription, squad_uuid)
     subscription.metered_access_blocked = True
-    subscription.metered_access_blocked_at = datetime.now(UTC)
+    if not was_blocked or getattr(subscription, 'metered_access_blocked_at', None) is None:
+        subscription.metered_access_blocked_at = datetime.now(UTC)
     subscription.metered_warning_percent = 100

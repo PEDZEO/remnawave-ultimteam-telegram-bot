@@ -103,7 +103,15 @@ def test_exhaustion_removes_only_metered_squad_and_is_idempotent() -> None:
     assert subscription.connected_squads == [STANDARD_SQUAD_UUID]
     assert subscription.metered_access_blocked is True
     assert isinstance(first_blocked_at, datetime)
+    assert subscription.metered_access_blocked_at == first_blocked_at
     assert subscription.metered_warning_percent == 100
+
+
+def test_healthy_reconciliation_keeps_warning_delivery_marker() -> None:
+    subscription = _subscription(metered_warning_percent=80)
+
+    assert restore_metered_access_if_available(subscription) is False
+    assert subscription.metered_warning_percent == 80
 
 
 def test_topup_restores_metered_squad_without_touching_standard_squad() -> None:
@@ -170,9 +178,9 @@ def test_tariff_traffic_topup_requires_special_servers() -> None:
 
 
 def test_system_squad_is_hidden_and_preserved_during_customer_selection() -> None:
-    assert get_customer_squad_uuids(
-        [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID, METERED_SQUAD_UUID_2]
-    ) == [STANDARD_SQUAD_UUID]
+    assert get_customer_squad_uuids([STANDARD_SQUAD_UUID, METERED_SQUAD_UUID, METERED_SQUAD_UUID_2]) == [
+        STANDARD_SQUAD_UUID
+    ]
     assert preserve_metered_squad(
         [STANDARD_SQUAD_UUID, METERED_SQUAD_UUID, METERED_SQUAD_UUID_2],
         [STANDARD_SQUAD_UUID],

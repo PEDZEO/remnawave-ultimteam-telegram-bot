@@ -76,6 +76,14 @@ class _MeteredTrafficPageResult:
     circuit_open: bool = False
 
 
+@dataclass
+class _MeteredTrafficFastPathResult:
+    results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]]
+    slow_users: list[RemnaWaveUser]
+    candidates: int = 0
+    deferred: int = 0
+
+
 class MeteredTrafficService:
     def __init__(self) -> None:
         self._bot: Bot | None = None
@@ -169,29 +177,16 @@ class MeteredTrafficService:
                     async for panel_users in self._iter_panel_user_pages(api):
                         stats.pages += 1
                         stats.scanned += len(panel_users)
-                        candidates = await self._filter_active_panel_users(panel_users)
-                        stats.candidates += len(candidates)
+                        fast_path = await self._process_panel_users_fast_path(panel_users)
+                        stats.candidates += fast_path.candidates
+                        stats.deferred += fast_path.deferred
+                        self._record_results(stats, fast_path.results)
 
                         page_result = await self._process_panel_users_concurrently(
                             api,
-                            candidates,
+                            fast_path.slow_users,
                         )
-                        for panel_user, result, error in page_result.results:
-                            if error is not None:
-                                stats.errors += 1
-                                logger.error(
-                                    'Failed to process metered traffic user',
-                                    panel_user_uuid=panel_user.uuid,
-                                    error=error,
-                                    exc_info=(type(error), error, error.__traceback__),
-                                )
-                                continue
-                            if result is None:
-                                continue
-                            stats.checked += 1
-                            for key in ('initialized', 'warned', 'blocked', 'restored', 'reconciled'):
-                                if result.get(key):
-                                    setattr(stats, key, getattr(stats, key) + 1)
+                        self._record_results(stats, page_result.results)
 
                         if page_result.circuit_open:
                             stats.deferred += page_result.deferred
@@ -217,6 +212,28 @@ class MeteredTrafficService:
         )
         logger.info('Metered traffic monitor completed', **asdict(stats))
         return stats
+
+    @staticmethod
+    def _record_results(
+        stats: MeteredTrafficRunStats,
+        results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]],
+    ) -> None:
+        for panel_user, result, error in results:
+            if error is not None:
+                stats.errors += 1
+                logger.error(
+                    'Failed to process metered traffic user',
+                    panel_user_uuid=panel_user.uuid,
+                    error=error,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+                continue
+            if result is None:
+                continue
+            stats.checked += 1
+            for key in ('initialized', 'warned', 'blocked', 'restored', 'reconciled'):
+                if result.get(key):
+                    setattr(stats, key, getattr(stats, key) + 1)
 
     @staticmethod
     async def _validate_node_multipliers(api) -> list[str]:
@@ -253,16 +270,18 @@ class MeteredTrafficService:
             if not batch or start >= int(page['total']):
                 break
 
-    @staticmethod
-    async def _filter_active_panel_users(panel_users: list[RemnaWaveUser]) -> list[RemnaWaveUser]:
-        """Discard unmanaged and inactive panel users with one query per page."""
+    async def _process_panel_users_fast_path(
+        self,
+        panel_users: list[RemnaWaveUser],
+    ) -> _MeteredTrafficFastPathResult:
+        """Update healthy subscriptions in one short transaction per panel page."""
         if not panel_users:
-            return []
+            return _MeteredTrafficFastPathResult(results=[], slow_users=[])
 
         panel_users_by_uuid = {panel_user.uuid: panel_user for panel_user in panel_users}
         now = datetime.now(UTC)
         async with AsyncSessionLocal() as db:
-            query = (
+            active_query = (
                 select(User.remnawave_uuid)
                 .join(Subscription, Subscription.user_id == User.id)
                 .where(
@@ -271,9 +290,165 @@ class MeteredTrafficService:
                     Subscription.end_date > now,
                 )
             )
-            active_uuids = set((await db.scalars(query)).all())
+            active_uuids = set((await db.scalars(active_query)).all())
+            if not active_uuids:
+                return _MeteredTrafficFastPathResult(results=[], slow_users=[])
 
-        return [panel_user for panel_user in panel_users if panel_user.uuid in active_uuids]
+            subscription_query = (
+                select(Subscription)
+                .join(User, User.id == Subscription.user_id)
+                .options(*self._subscription_load_options())
+                .where(
+                    User.remnawave_uuid.in_(active_uuids),
+                    Subscription.status.in_((SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)),
+                    Subscription.end_date > now,
+                )
+                .with_for_update(of=Subscription, skip_locked=True)
+            )
+            subscriptions = (await db.execute(subscription_query)).scalars().all()
+            subscriptions_by_uuid = {
+                subscription.user.remnawave_uuid: subscription
+                for subscription in subscriptions
+                if subscription.user.remnawave_uuid
+            }
+
+            results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]] = []
+            slow_users: list[RemnaWaveUser] = []
+            for panel_user in panel_users:
+                subscription = subscriptions_by_uuid.get(panel_user.uuid)
+                if subscription is None:
+                    continue
+                if self._requires_individual_processing(subscription, panel_user):
+                    slow_users.append(panel_user)
+                    continue
+                results.append(
+                    (
+                        panel_user,
+                        self._apply_fast_path(subscription, panel_user, now=now),
+                        None,
+                    )
+                )
+
+            await db.commit()
+
+        return _MeteredTrafficFastPathResult(
+            results=results,
+            slow_users=slow_users,
+            candidates=len(active_uuids),
+            deferred=max(0, len(active_uuids) - len(subscriptions)),
+        )
+
+    @staticmethod
+    def _subscription_load_options() -> tuple[Any, Any]:
+        return (
+            contains_eager(Subscription.user).load_only(
+                User.id,
+                User.telegram_id,
+                User.status,
+                User.language,
+                User.remnawave_uuid,
+                User.email,
+                User.email_verified,
+                User.notification_settings,
+            ),
+            joinedload(Subscription.tariff).load_only(
+                Tariff.id,
+                Tariff.special_servers_enabled,
+            ),
+        )
+
+    def _requires_individual_processing(
+        self,
+        subscription: Subscription,
+        panel_user: RemnaWaveUser,
+    ) -> bool:
+        panel_squads = extract_squad_uuids(panel_user.active_internal_squads)
+        stored_squads = extract_squad_uuids(subscription.connected_squads)
+        if panel_user.traffic_limit_bytes != 0 or panel_user.status == UserStatus.LIMITED:
+            return True
+
+        if not subscription_allows_special_servers(subscription):
+            desired_squads = build_subscription_squads(subscription)
+            return set(panel_squads) != set(desired_squads)
+
+        if set(panel_squads) != set(stored_squads):
+            return True
+
+        metered_squads = get_metered_squad_uuids()
+        has_all_metered_squads = all(squad_uuid in stored_squads for squad_uuid in metered_squads)
+        is_blocked = bool(subscription.metered_access_blocked)
+
+        if subscription.metered_traffic_initialized_at is None:
+            return is_blocked or not has_all_metered_squads
+
+        panel_counter = max(0, int(panel_user.used_traffic_bytes or 0))
+        used_bytes, _, _ = calculate_metered_usage(
+            panel_counter_bytes=panel_counter,
+            baseline_bytes=subscription.metered_traffic_baseline_bytes,
+            last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
+        )
+        limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
+        if limit_bytes <= 0:
+            return is_blocked or not has_all_metered_squads
+
+        if used_bytes >= limit_bytes:
+            had_entitlement = any(squad_uuid in stored_squads for squad_uuid in metered_squads) or is_blocked
+            if had_entitlement:
+                return not is_blocked or any(squad_uuid in stored_squads for squad_uuid in metered_squads)
+        elif is_blocked or not has_all_metered_squads:
+            return True
+
+        actual_percent = int((used_bytes * 100) / limit_bytes)
+        warning_percent = self._resolve_user_warning_percent(subscription.user)
+        return actual_percent >= warning_percent and subscription.metered_warning_percent < warning_percent
+
+    @staticmethod
+    def _apply_fast_path(
+        subscription: Subscription,
+        panel_user: RemnaWaveUser,
+        *,
+        now: datetime,
+    ) -> dict[str, bool]:
+        result = {
+            'initialized': False,
+            'warned': False,
+            'blocked': False,
+            'restored': False,
+            'reconciled': False,
+        }
+        panel_counter = max(0, int(panel_user.used_traffic_bytes or 0))
+
+        if not subscription_allows_special_servers(subscription):
+            disable_metered_access(subscription, panel_counter_bytes=panel_counter)
+            return result
+
+        if subscription.metered_traffic_initialized_at is None:
+            subscription.metered_traffic_baseline_bytes = panel_counter
+            subscription.metered_traffic_last_counter_bytes = panel_counter
+            subscription.metered_traffic_initialized_at = now
+            subscription.metered_traffic_last_checked_at = now
+            subscription.metered_warning_percent = 0
+            subscription.traffic_used_gb = 0.0
+            result['initialized'] = True
+            return result
+
+        used_bytes, baseline, counter_was_reset = calculate_metered_usage(
+            panel_counter_bytes=panel_counter,
+            baseline_bytes=subscription.metered_traffic_baseline_bytes,
+            last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
+        )
+        subscription.metered_traffic_baseline_bytes = baseline
+        subscription.metered_traffic_last_counter_bytes = panel_counter
+        subscription.metered_traffic_last_checked_at = now
+        subscription.traffic_used_gb = round(used_bytes / BYTES_PER_GB, 6)
+        if counter_was_reset:
+            subscription.metered_warning_percent = 0
+
+        limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
+        if limit_bytes > 0 and used_bytes >= limit_bytes and subscription.metered_access_blocked:
+            block_metered_access(subscription)
+
+        return result
 
     async def _process_panel_users_concurrently(
         self,
@@ -331,21 +506,7 @@ class MeteredTrafficService:
             query = (
                 select(Subscription)
                 .join(User, User.id == Subscription.user_id)
-                .options(
-                    contains_eager(Subscription.user).load_only(
-                        User.id,
-                        User.telegram_id,
-                        User.status,
-                        User.language,
-                        User.email,
-                        User.email_verified,
-                        User.notification_settings,
-                    ),
-                    joinedload(Subscription.tariff).load_only(
-                        Tariff.id,
-                        Tariff.special_servers_enabled,
-                    ),
-                )
+                .options(*self._subscription_load_options())
                 .where(User.remnawave_uuid == panel_user.uuid)
                 .with_for_update(of=Subscription)
             )
