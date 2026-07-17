@@ -14,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database.models import Subscription, User
+from app.services.metered_traffic_policy import (
+    get_metered_node_multipliers,
+    normalize_metered_node_multiplier,
+    serialize_metered_node_multipliers,
+)
 from app.services.metered_traffic_service import metered_traffic_service
 from app.services.remnawave_service import remnawave_service
 from app.services.system_settings_service import (
@@ -93,6 +98,7 @@ class MeteredTrafficConfigurationUpdate(BaseModel):
     enabled: bool
     squad_uuid: str = ''
     metered_node_uuids: list[str] = Field(default_factory=list)
+    metered_node_multipliers: dict[str, float] = Field(default_factory=dict)
     check_interval_seconds: int = Field(ge=15, le=3600)
     warning_percent: int = Field(ge=25, le=95)
     server_label: str = Field(min_length=1, max_length=40)
@@ -293,6 +299,30 @@ def _normalize_uuid_list(values: list[str], *, field_name: str) -> list[str]:
     return normalized
 
 
+def _normalize_metered_node_multipliers(
+    node_uuids: list[str],
+    raw_values: dict[str, float],
+) -> dict[str, float]:
+    normalized_values: dict[str, float] = {}
+    try:
+        for raw_uuid, raw_multiplier in raw_values.items():
+            normalized_values[str(UUID(str(raw_uuid).strip()))] = normalize_metered_node_multiplier(raw_multiplier)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            'Коэффициент ноды должен быть от 0.1 до 100 с точностью до одного знака',
+        ) from error
+
+    unknown_nodes = set(normalized_values) - set(node_uuids)
+    if unknown_nodes:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f'Коэффициенты переданы для невыбранных нод: {", ".join(sorted(unknown_nodes))}',
+        )
+
+    return {node_uuid: normalized_values.get(node_uuid, 1.0) for node_uuid in node_uuids}
+
+
 def _serialize_metered_squad(squad: Any) -> dict[str, Any]:
     return {
         'uuid': squad.uuid,
@@ -345,10 +375,10 @@ async def _metered_configuration_payload(
         str(bot_configuration_service.get_current_value('ULTIMA_METERED_NODE_UUIDS') or '').split(','),
         field_name='Список нод',
     )
-    configured_node_set = set(configured_nodes)
+    configured_multipliers = get_metered_node_multipliers()
     topology_errors = []
     for node in nodes:
-        expected = 1.0 if node.uuid in configured_node_set else 0.0
+        expected = configured_multipliers.get(node.uuid, 0.0)
         actual = float(node.consumption_multiplier or 0)
         if abs(actual - expected) > 0.001:
             topology_errors.append(f'{node.name}: сейчас {actual:g}×, требуется {expected:g}×')
@@ -358,6 +388,7 @@ async def _metered_configuration_payload(
             'enabled': bool(bot_configuration_service.get_current_value('ULTIMA_METERED_TRAFFIC_ENABLED')),
             'squad_uuid': str(bot_configuration_service.get_current_value('ULTIMA_METERED_SQUAD_UUID') or ''),
             'metered_node_uuids': configured_nodes,
+            'metered_node_multipliers': configured_multipliers,
             'check_interval_seconds': int(
                 bot_configuration_service.get_current_value('ULTIMA_METERED_CHECK_INTERVAL_SECONDS') or 60
             ),
@@ -550,6 +581,7 @@ async def update_metered_traffic_configuration(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Выбран некорректный UUID сквада') from error
 
     node_uuids = _normalize_uuid_list(payload.metered_node_uuids, field_name='Список тарифицируемых нод')
+    node_multipliers = _normalize_metered_node_multipliers(node_uuids, payload.metered_node_multipliers)
     available_squads = {squad.uuid for squad in squads}
     available_nodes = {node.uuid for node in nodes}
 
@@ -569,6 +601,7 @@ async def update_metered_traffic_configuration(
     values = {
         'ULTIMA_METERED_SQUAD_UUID': squad_uuid,
         'ULTIMA_METERED_NODE_UUIDS': ','.join(node_uuids),
+        'ULTIMA_METERED_NODE_MULTIPLIERS': serialize_metered_node_multipliers(node_multipliers),
         'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': payload.check_interval_seconds,
         'ULTIMA_METERED_WARNING_PERCENT': payload.warning_percent,
         'ULTIMA_METERED_SERVER_LABEL': payload.server_label,
@@ -577,19 +610,14 @@ async def update_metered_traffic_configuration(
     }
     coerced_values = {key: _coerce_value(key, value) for key, value in values.items()}
 
-    metered_node_set = set(node_uuids)
-    nodes_to_meter = [
-        node.uuid
-        for node in nodes
-        if node.uuid in metered_node_set and abs(float(node.consumption_multiplier or 0) - 1.0) > 0.001
-    ]
-    nodes_to_unlimit = [
-        node.uuid
-        for node in nodes
-        if node.uuid not in metered_node_set and abs(float(node.consumption_multiplier or 0)) > 0.001
-    ]
+    target_multipliers = {node.uuid: node_multipliers.get(node.uuid, 0.0) for node in nodes}
+    multiplier_updates: dict[float, list[str]] = {}
+    for node in nodes:
+        target_multiplier = target_multipliers[node.uuid]
+        if abs(float(node.consumption_multiplier or 0) - target_multiplier) > 0.001:
+            multiplier_updates.setdefault(target_multiplier, []).append(node.uuid)
 
-    changed_node_uuids = set(nodes_to_meter) | set(nodes_to_unlimit)
+    changed_node_uuids = {node_uuid for node_uuids in multiplier_updates.values() for node_uuid in node_uuids}
     changed_nodes = [node for node in nodes if node.uuid in changed_node_uuids]
     previous_monitor_enabled = metered_traffic_service.is_enabled()
     previous_settings = {
@@ -601,12 +629,12 @@ async def update_metered_traffic_configuration(
     await metered_traffic_service.stop()
     try:
         async with remnawave_service.get_api_client() as api:
-            if nodes_to_meter:
-                if not await api.update_nodes_consumption_multiplier(nodes_to_meter, 1.0):
-                    raise RuntimeError('Remnawave rejected metered node multiplier update')
-            if nodes_to_unlimit:
-                if not await api.update_nodes_consumption_multiplier(nodes_to_unlimit, 0.0):
-                    raise RuntimeError('Remnawave rejected unlimited node multiplier update')
+            for multiplier, update_node_uuids in sorted(
+                multiplier_updates.items(),
+                key=lambda item: (item[0] == 0, item[0]),
+            ):
+                if not await api.update_nodes_consumption_multiplier(update_node_uuids, multiplier):
+                    raise RuntimeError(f'Remnawave rejected node multiplier update to {multiplier:g}')
 
         for key, value in coerced_values.items():
             await bot_configuration_service.set_value(db, key, value)
@@ -649,12 +677,12 @@ async def update_metered_traffic_configuration(
         ) from error
 
     for node in nodes:
-        node.consumption_multiplier = 1.0 if node.uuid in metered_node_set else 0.0
+        node.consumption_multiplier = target_multipliers[node.uuid]
 
     if metered_traffic_service.is_enabled():
         await metered_traffic_service.start()
 
-    nodes_updated = len(nodes_to_meter) + len(nodes_to_unlimit)
+    nodes_updated = len(changed_node_uuids)
     logger.info(
         'Admin updated split traffic configuration',
         telegram_id=admin.telegram_id,

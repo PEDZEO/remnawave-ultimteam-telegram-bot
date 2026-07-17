@@ -9,6 +9,7 @@ from app.services.metered_traffic_policy import (
     build_subscription_squads,
     calculate_metered_usage,
     get_customer_squad_uuids,
+    get_metered_node_multipliers,
     panel_traffic_limit_bytes,
     preserve_metered_squad,
     reset_metered_cycle,
@@ -27,6 +28,7 @@ def _enable_metered_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'ULTIMA_METERED_TRAFFIC_ENABLED', True)
     monkeypatch.setattr(settings, 'ULTIMA_METERED_SQUAD_UUID', METERED_SQUAD_UUID)
     monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_UUIDS', '33333333-3333-3333-3333-333333333333')
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_MULTIPLIERS', '{}')
 
 
 def _subscription(**overrides):
@@ -45,6 +47,12 @@ def _subscription(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_legacy_metered_node_list_defaults_to_one_multiplier() -> None:
+    assert get_metered_node_multipliers() == {
+        '33333333-3333-3333-3333-333333333333': 1.0,
+    }
 
 
 def test_panel_limit_is_unlimited_only_in_metered_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,14 +173,22 @@ def test_reset_cycle_uses_current_panel_counter_and_restores_access() -> None:
 
 
 @pytest.mark.asyncio
-async def test_topology_validation_requires_one_for_metered_and_zero_for_other_nodes() -> None:
+async def test_topology_validation_accepts_configured_multiplier_for_metered_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings,
+        'ULTIMA_METERED_NODE_MULTIPLIERS',
+        '{"33333333-3333-3333-3333-333333333333":2}',
+    )
+
     class FakeApi:
         async def get_all_nodes(self):
             return [
                 SimpleNamespace(
                     uuid='33333333-3333-3333-3333-333333333333',
                     name='Metered',
-                    consumption_multiplier=1,
+                    consumption_multiplier=2,
                 ),
                 SimpleNamespace(
                     uuid='44444444-4444-4444-4444-444444444444',
@@ -185,7 +201,13 @@ async def test_topology_validation_requires_one_for_metered_and_zero_for_other_n
 
 
 @pytest.mark.asyncio
-async def test_topology_validation_reports_unsafe_multipliers() -> None:
+async def test_topology_validation_reports_unsafe_multipliers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        settings,
+        'ULTIMA_METERED_NODE_MULTIPLIERS',
+        '{"33333333-3333-3333-3333-333333333333":2}',
+    )
+
     class FakeApi:
         async def get_all_nodes(self):
             return [
@@ -204,5 +226,5 @@ async def test_topology_validation_reports_unsafe_multipliers() -> None:
     errors = await MeteredTrafficService._validate_node_multipliers(FakeApi())
 
     assert len(errors) == 2
-    assert any('Metered' in error and 'требуется 1' in error for error in errors)
+    assert any('Metered' in error and 'требуется 2' in error for error in errors)
     assert any('Unlimited' in error and 'требуется 0' in error for error in errors)

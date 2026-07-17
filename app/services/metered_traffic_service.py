@@ -25,6 +25,7 @@ from app.services.metered_traffic_policy import (
     disable_metered_access,
     extract_squad_uuids,
     get_metered_check_interval_seconds,
+    get_metered_node_multipliers,
     get_metered_node_uuids,
     get_metered_squad_uuid,
     get_metered_warning_percent,
@@ -77,6 +78,7 @@ class MeteredTrafficService:
             'running': self._task is not None and not self._task.done(),
             'squad_uuid': get_metered_squad_uuid(),
             'node_uuids': get_metered_node_uuids(),
+            'node_multipliers': get_metered_node_multipliers(),
             'interval_seconds': get_metered_check_interval_seconds(),
             'last_run_at': self._last_run_at.isoformat() if self._last_run_at else None,
             'last_error': self._last_error,
@@ -164,21 +166,20 @@ class MeteredTrafficService:
 
     @staticmethod
     async def _validate_node_multipliers(api) -> list[str]:
-        configured = set(get_metered_node_uuids())
+        configured = get_metered_node_multipliers()
         nodes = await api.get_all_nodes()
         nodes_by_uuid = {node.uuid: node for node in nodes}
         errors: list[str] = []
 
-        missing = configured - nodes_by_uuid.keys()
+        missing = set(configured) - nodes_by_uuid.keys()
         if missing:
             errors.append(f'Не найдены ноды: {", ".join(sorted(missing))}')
 
         for node in nodes:
             multiplier = float(node.consumption_multiplier or 0)
-            if node.uuid in configured and abs(multiplier - 1.0) > 0.001:
-                errors.append(f'Нода {node.name}: коэффициент {multiplier:g}, требуется 1')
-            elif node.uuid not in configured and abs(multiplier) > 0.001:
-                errors.append(f'Безлимитная нода {node.name}: коэффициент {multiplier:g}, требуется 0')
+            expected = configured.get(node.uuid, 0.0)
+            if abs(multiplier - expected) > 0.001:
+                errors.append(f'Нода {node.name}: коэффициент {multiplier:g}, требуется {expected:g}')
 
         return errors
 

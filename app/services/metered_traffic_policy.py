@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -7,6 +9,8 @@ from app.config import settings
 
 
 BYTES_PER_GB = 1024**3
+MIN_METERED_NODE_MULTIPLIER = 0.1
+MAX_METERED_NODE_MULTIPLIER = 100.0
 
 
 def is_metered_traffic_enabled() -> bool:
@@ -24,6 +28,43 @@ def get_metered_squad_uuid() -> str:
 def get_metered_node_uuids() -> list[str]:
     raw_value = str(getattr(settings, 'ULTIMA_METERED_NODE_UUIDS', '') or '')
     return list(dict.fromkeys(part.strip() for part in raw_value.split(',') if part.strip()))
+
+
+def normalize_metered_node_multiplier(value: Any) -> float:
+    multiplier = round(float(value), 1)
+    if not math.isfinite(multiplier) or not MIN_METERED_NODE_MULTIPLIER <= multiplier <= MAX_METERED_NODE_MULTIPLIER:
+        raise ValueError(
+            f'Node multiplier must be between {MIN_METERED_NODE_MULTIPLIER:g} and {MAX_METERED_NODE_MULTIPLIER:g}'
+        )
+    return multiplier
+
+
+def get_metered_node_multipliers() -> dict[str, float]:
+    """Return configured accounting multipliers, falling back to 1x for legacy UUID lists."""
+    configured_nodes = get_metered_node_uuids()
+    raw_value = str(getattr(settings, 'ULTIMA_METERED_NODE_MULTIPLIERS', '') or '').strip()
+    try:
+        decoded = json.loads(raw_value) if raw_value else {}
+    except (TypeError, ValueError):
+        decoded = {}
+    if not isinstance(decoded, dict):
+        decoded = {}
+
+    result: dict[str, float] = {}
+    for node_uuid in configured_nodes:
+        try:
+            result[node_uuid] = normalize_metered_node_multiplier(decoded.get(node_uuid, 1.0))
+        except (TypeError, ValueError):
+            result[node_uuid] = 1.0
+    return result
+
+
+def serialize_metered_node_multipliers(values: dict[str, float]) -> str:
+    normalized = {
+        str(node_uuid): normalize_metered_node_multiplier(multiplier)
+        for node_uuid, multiplier in sorted(values.items())
+    }
+    return json.dumps(normalized, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
 
 
 def get_metered_check_interval_seconds() -> int:

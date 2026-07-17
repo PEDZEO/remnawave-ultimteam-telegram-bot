@@ -45,6 +45,7 @@ def _payload(**overrides: Any) -> MeteredTrafficConfigurationUpdate:
         'enabled': True,
         'squad_uuid': SQUAD_UUID,
         'metered_node_uuids': [METERED_NODE_UUID],
+        'metered_node_multipliers': {METERED_NODE_UUID: 2},
         'check_interval_seconds': 60,
         'warning_percent': 80,
         'server_label': 'Спецсерверы',
@@ -157,12 +158,13 @@ async def test_configuration_updates_node_coefficients_before_starting_monitor(
     assert response == {'nodes_updated': 2}
     assert events[0] == 'stop'
     assert events[1:3] == [
-        f'node:1:{METERED_NODE_UUID}',
+        f'node:2:{METERED_NODE_UUID}',
         f'node:0:{UNLIMITED_NODE_UUID}',
     ]
     assert events[-2:] == ['commit', 'start']
     assert saved_values['ULTIMA_METERED_SQUAD_UUID'] == SQUAD_UUID
     assert saved_values['ULTIMA_METERED_NODE_UUIDS'] == METERED_NODE_UUID
+    assert saved_values['ULTIMA_METERED_NODE_MULTIPLIERS'] == f'{{"{METERED_NODE_UUID}":2.0}}'
     assert saved_values['ULTIMA_METERED_TRAFFIC_ENABLED'] is True
 
 
@@ -178,13 +180,34 @@ async def test_configuration_requires_metered_node_when_enabled(monkeypatch: pyt
 
     with pytest.raises(HTTPException) as exc_info:
         await admin_settings.update_metered_traffic_configuration(
-            _payload(metered_node_uuids=[]),
+            _payload(metered_node_uuids=[], metered_node_multipliers={}),
             admin=SimpleNamespace(telegram_id=42),
             db=FakeDb([]),
         )
 
     assert exc_info.value.status_code == 400
     assert 'хотя бы одну' in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_configuration_rejects_out_of_range_node_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:
+    squads = [SimpleNamespace(uuid=SQUAD_UUID)]
+    nodes = [SimpleNamespace(uuid=METERED_NODE_UUID)]
+
+    async def fake_load_topology() -> tuple[list[Any], list[Any]]:
+        return squads, nodes
+
+    monkeypatch.setattr(admin_settings, '_load_metered_topology', fake_load_topology)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_settings.update_metered_traffic_configuration(
+            _payload(metered_node_multipliers={METERED_NODE_UUID: 101}),
+            admin=SimpleNamespace(telegram_id=42),
+            db=FakeDb([]),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert '0.1 до 100' in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -237,7 +260,7 @@ async def test_configuration_restores_coefficients_and_monitor_after_partial_fai
     assert exc_info.value.status_code == 502
     assert events == [
         'stop',
-        f'node:1:{METERED_NODE_UUID}',
+        f'node:2:{METERED_NODE_UUID}',
         f'node:0:{UNLIMITED_NODE_UUID}',
         'rollback',
         f'node:0:{METERED_NODE_UUID}',
