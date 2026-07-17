@@ -40,3 +40,18 @@ async def test_oauth_state_context_rejects_expired_state(monkeypatch: pytest.Mon
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == 'Invalid or expired OAuth state'
+
+
+async def test_oauth_login_syncs_existing_panel_subscription(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = AsyncMock()
+    user = type('UserStub', (), {'id': 42, 'cabinet_last_login': None})()
+    sync_mock = AsyncMock()
+    create_auth_mock = AsyncMock(side_effect=RuntimeError('stop after sync'))
+    monkeypatch.setattr(oauth, '_sync_subscription_from_panel_by_email', sync_mock)
+    monkeypatch.setattr(oauth, '_create_auth_response', create_auth_mock)
+
+    with pytest.raises(RuntimeError, match='stop after sync'):
+        await oauth._finalize_oauth_login(db, user, 'yandex')
+
+    sync_mock.assert_awaited_once_with(db, user)
+    create_auth_mock.assert_awaited_once_with(user, db)

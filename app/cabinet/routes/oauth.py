@@ -27,7 +27,12 @@ from ..auth.oauth_providers import (
 )
 from ..dependencies import get_cabinet_db
 from ..schemas.auth import AuthResponse
-from .auth import _create_auth_response, _process_campaign_bonus, _store_refresh_token
+from .auth import (
+    _create_auth_response,
+    _process_campaign_bonus,
+    _store_refresh_token,
+    _sync_subscription_from_panel_by_email,
+)
 
 
 logger = structlog.get_logger(__name__)
@@ -43,6 +48,7 @@ async def _finalize_oauth_login(
     referral_code: str | None = None,
 ) -> AuthResponse:
     """Update last login, create tokens, store refresh token."""
+    await _sync_subscription_from_panel_by_email(db, user)
     user.cabinet_last_login = datetime.now(UTC)
     await db.commit()
     auth_response = await _create_auth_response(user, db)
