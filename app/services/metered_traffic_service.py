@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -9,13 +11,14 @@ import structlog
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app.config import settings
 from app.database.advisory_lock import distributed_job_lock
 from app.database.database import AsyncSessionLocal
-from app.database.models import Subscription, User
-from app.external.remnawave_api import RemnaWaveUser, UserStatus
+from app.database.models import Subscription, SubscriptionStatus, Tariff, User
+from app.external.remnawave_api import RemnaWaveAPIError, RemnaWaveUser, UserStatus
 from app.localization.texts import get_texts
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
@@ -42,10 +45,16 @@ from app.utils.miniapp_buttons import build_miniapp_or_callback_button
 logger = structlog.get_logger(__name__)
 
 _METERED_TRAFFIC_LOCK_ID = 7_612_946_175_504_209_054
+_METERED_TRAFFIC_PAGE_SIZE = 1000
+_METERED_TRAFFIC_WORKER_CONCURRENCY = 8
+_METERED_TRAFFIC_MIN_LOOP_DELAY_SECONDS = 5.0
+_METERED_TRAFFIC_USER_TIMEOUT_SECONDS = 75.0
 
 
 @dataclass
 class MeteredTrafficRunStats:
+    scanned: int = 0
+    candidates: int = 0
     checked: int = 0
     initialized: int = 0
     warned: int = 0
@@ -53,7 +62,18 @@ class MeteredTrafficRunStats:
     restored: int = 0
     reconciled: int = 0
     errors: int = 0
+    deferred: int = 0
     skipped: bool = False
+    aborted: bool = False
+    pages: int = 0
+    duration_seconds: float = 0.0
+
+
+@dataclass
+class _MeteredTrafficPageResult:
+    results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]]
+    deferred: int = 0
+    circuit_open: bool = False
 
 
 class MeteredTrafficService:
@@ -111,6 +131,7 @@ class MeteredTrafficService:
 
     async def _run_loop(self) -> None:
         while self._running:
+            iteration_started = time.monotonic()
             try:
                 await self.run_once()
             except asyncio.CancelledError:
@@ -118,10 +139,19 @@ class MeteredTrafficService:
             except Exception as error:
                 self._last_error = str(error)
                 logger.error('Metered traffic monitor iteration failed', error=error, exc_info=True)
-            await asyncio.sleep(get_metered_check_interval_seconds())
+            elapsed = time.monotonic() - iteration_started
+            await asyncio.sleep(self._calculate_loop_delay(get_metered_check_interval_seconds(), elapsed))
+
+    @staticmethod
+    def _calculate_loop_delay(interval_seconds: int, elapsed_seconds: float) -> float:
+        """Keep a stable start-to-start cadence without spinning after an overrun."""
+        interval = max(1.0, float(interval_seconds))
+        minimum_delay = min(_METERED_TRAFFIC_MIN_LOOP_DELAY_SECONDS, interval)
+        return max(minimum_delay, interval - max(0.0, elapsed_seconds))
 
     async def run_once(self) -> MeteredTrafficRunStats:
         stats = MeteredTrafficRunStats()
+        run_started = time.monotonic()
         if not self.is_enabled():
             stats.skipped = True
             return stats
@@ -136,33 +166,55 @@ class MeteredTrafficService:
                     self._last_topology_errors = await self._validate_node_multipliers(api)
                     if self._last_topology_errors:
                         raise RuntimeError('; '.join(self._last_topology_errors))
-                    panel_users = await self._load_panel_users(api)
-                    for panel_user in panel_users:
-                        try:
-                            result = await self._process_panel_user(api, panel_user)
+                    async for panel_users in self._iter_panel_user_pages(api):
+                        stats.pages += 1
+                        stats.scanned += len(panel_users)
+                        candidates = await self._filter_active_panel_users(panel_users)
+                        stats.candidates += len(candidates)
+
+                        page_result = await self._process_panel_users_concurrently(
+                            api,
+                            candidates,
+                        )
+                        for panel_user, result, error in page_result.results:
+                            if error is not None:
+                                stats.errors += 1
+                                logger.error(
+                                    'Failed to process metered traffic user',
+                                    panel_user_uuid=panel_user.uuid,
+                                    error=error,
+                                    exc_info=(type(error), error, error.__traceback__),
+                                )
+                                continue
                             if result is None:
                                 continue
                             stats.checked += 1
                             for key in ('initialized', 'warned', 'blocked', 'restored', 'reconciled'):
                                 if result.get(key):
                                     setattr(stats, key, getattr(stats, key) + 1)
-                        except Exception as error:
-                            stats.errors += 1
-                            logger.error(
-                                'Failed to process metered traffic user',
-                                panel_user_uuid=panel_user.uuid,
-                                error=error,
-                                exc_info=True,
+
+                        if page_result.circuit_open:
+                            stats.deferred += page_result.deferred
+                            stats.aborted = True
+                            logger.warning(
+                                'Metered traffic monitor circuit opened after systemic failures',
+                                deferred=page_result.deferred,
                             )
+                            break
             except Exception as error:
                 stats.errors += 1
                 self._last_error = str(error)
                 raise
             finally:
+                stats.duration_seconds = round(time.monotonic() - run_started, 3)
                 self._last_run_at = datetime.now(UTC)
                 self._last_stats = stats
 
-        self._last_error = None
+        self._last_error = (
+            'Проверка остановлена после серии системных ошибок; оставшиеся подписки будут повторены в следующем проходе'
+            if stats.aborted
+            else None
+        )
         logger.info('Metered traffic monitor completed', **asdict(stats))
         return stats
 
@@ -186,18 +238,83 @@ class MeteredTrafficService:
         return errors
 
     @staticmethod
-    async def _load_panel_users(api) -> list[RemnaWaveUser]:
-        users: list[RemnaWaveUser] = []
+    async def _iter_panel_user_pages(api) -> AsyncIterator[list[RemnaWaveUser]]:
         start = 0
-        page_size = 100
         while True:
-            page = await api.get_all_users(start=start, size=page_size, enrich_happ_links=False)
+            page = await api.get_all_users(
+                start=start,
+                size=_METERED_TRAFFIC_PAGE_SIZE,
+                enrich_happ_links=False,
+            )
             batch = page['users']
-            users.extend(batch)
+            if batch:
+                yield batch
             start += len(batch)
             if not batch or start >= int(page['total']):
                 break
-        return users
+
+    @staticmethod
+    async def _filter_active_panel_users(panel_users: list[RemnaWaveUser]) -> list[RemnaWaveUser]:
+        """Discard unmanaged and inactive panel users with one query per page."""
+        if not panel_users:
+            return []
+
+        panel_users_by_uuid = {panel_user.uuid: panel_user for panel_user in panel_users}
+        now = datetime.now(UTC)
+        async with AsyncSessionLocal() as db:
+            query = (
+                select(User.remnawave_uuid)
+                .join(Subscription, Subscription.user_id == User.id)
+                .where(
+                    User.remnawave_uuid.in_(panel_users_by_uuid),
+                    Subscription.status.in_((SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)),
+                    Subscription.end_date > now,
+                )
+            )
+            active_uuids = set((await db.scalars(query)).all())
+
+        return [panel_user for panel_user in panel_users if panel_user.uuid in active_uuids]
+
+    async def _process_panel_users_concurrently(
+        self,
+        api,
+        panel_users: list[RemnaWaveUser],
+    ) -> _MeteredTrafficPageResult:
+        async def process_one(
+            panel_user: RemnaWaveUser,
+        ) -> tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]:
+            try:
+                async with asyncio.timeout(_METERED_TRAFFIC_USER_TIMEOUT_SECONDS):
+                    return panel_user, await self._process_panel_user(api, panel_user), None
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                return panel_user, None, error
+
+        results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]] = []
+        for offset in range(0, len(panel_users), _METERED_TRAFFIC_WORKER_CONCURRENCY):
+            chunk = panel_users[offset : offset + _METERED_TRAFFIC_WORKER_CONCURRENCY]
+            chunk_results = await asyncio.gather(*(process_one(panel_user) for panel_user in chunk))
+            results.extend(chunk_results)
+
+            if len(chunk) == _METERED_TRAFFIC_WORKER_CONCURRENCY and all(
+                error is not None and self._is_systemic_error(error) for _, _, error in chunk_results
+            ):
+                return _MeteredTrafficPageResult(
+                    results=results,
+                    deferred=len(panel_users) - len(results),
+                    circuit_open=True,
+                )
+
+        return _MeteredTrafficPageResult(results=results)
+
+    @staticmethod
+    def _is_systemic_error(error: Exception) -> bool:
+        if isinstance(error, (TimeoutError, OperationalError, InterfaceError)):
+            return True
+        if isinstance(error, RemnaWaveAPIError):
+            return error.status_code is None or error.status_code == 429 or error.status_code >= 500
+        return False
 
     async def _process_panel_user(self, api, panel_user: RemnaWaveUser) -> dict[str, bool] | None:
         now = datetime.now(UTC)
@@ -214,9 +331,23 @@ class MeteredTrafficService:
             query = (
                 select(Subscription)
                 .join(User, User.id == Subscription.user_id)
-                .options(selectinload(Subscription.user), selectinload(Subscription.tariff))
+                .options(
+                    contains_eager(Subscription.user).load_only(
+                        User.id,
+                        User.telegram_id,
+                        User.status,
+                        User.language,
+                        User.email,
+                        User.email_verified,
+                        User.notification_settings,
+                    ),
+                    joinedload(Subscription.tariff).load_only(
+                        Tariff.id,
+                        Tariff.special_servers_enabled,
+                    ),
+                )
                 .where(User.remnawave_uuid == panel_user.uuid)
-                .with_for_update()
+                .with_for_update(of=Subscription)
             )
             subscription = (await db.execute(query)).scalar_one_or_none()
             if subscription is None or subscription.end_date is None:
@@ -277,8 +408,7 @@ class MeteredTrafficService:
             squad_uuids = get_metered_squad_uuids()
             connected_squads = extract_squad_uuids(subscription.connected_squads)
             had_metered_entitlement = (
-                any(squad_uuid in connected_squads for squad_uuid in squad_uuids)
-                or subscription.metered_access_blocked
+                any(squad_uuid in connected_squads for squad_uuid in squad_uuids) or subscription.metered_access_blocked
             )
 
             transition_blocked = False

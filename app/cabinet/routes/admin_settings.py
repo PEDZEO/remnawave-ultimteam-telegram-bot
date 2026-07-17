@@ -203,7 +203,6 @@ def _coerce_value(key: str, value: Any) -> Any:
         except ValueError as error:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Value must contain valid UUIDs') from error
         normalized = ','.join(dict.fromkeys(parts))
-        normalized = ','.join(dict.fromkeys(parts))
 
     if key in {'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU', 'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU'}:
         message = str(normalized).strip()
@@ -235,19 +234,29 @@ def _coerce_value(key: str, value: Any) -> Any:
 
 
 async def _metered_status_payload(db: AsyncSession) -> dict[str, Any]:
-    blocked = await db.scalar(select(func.count()).select_from(Subscription).where(Subscription.metered_access_blocked))
-    initialized = await db.scalar(
-        select(func.count()).select_from(Subscription).where(Subscription.metered_traffic_initialized_at.is_not(None))
-    )
-    active = await db.scalar(
-        select(func.count()).select_from(Subscription).where(Subscription.status.in_(['active', 'trial']))
-    )
+    now = datetime.now(UTC)
+    counters = (
+        await db.execute(
+            select(
+                func.count(Subscription.id)
+                .filter(
+                    Subscription.status.in_(['active', 'trial']),
+                    Subscription.end_date > now,
+                )
+                .label('active'),
+                func.count(Subscription.id)
+                .filter(Subscription.metered_traffic_initialized_at.is_not(None))
+                .label('initialized'),
+                func.count(Subscription.id).filter(Subscription.metered_access_blocked.is_(True)).label('blocked'),
+            )
+        )
+    ).one()
     return {
         **metered_traffic_service.get_status(),
         'subscriptions': {
-            'active': int(active or 0),
-            'initialized': int(initialized or 0),
-            'blocked': int(blocked or 0),
+            'active': int(counters.active or 0),
+            'initialized': int(counters.initialized or 0),
+            'blocked': int(counters.blocked or 0),
         },
     }
 
@@ -315,14 +324,47 @@ async def _remove_retired_metered_squads(db: AsyncSession, retired_squad_uuids: 
     if not retired_squad_uuids:
         return 0
 
-    subscriptions = (await db.execute(select(Subscription))).scalars().all()
+    batch_size = 500
+    last_id = 0
     updated = 0
-    for subscription in subscriptions:
-        current = extract_squad_uuids(subscription.connected_squads)
-        desired = [squad_uuid for squad_uuid in current if squad_uuid not in retired_squad_uuids]
-        if desired != current:
-            subscription.connected_squads = desired
-            updated += 1
+    squad_filters = [
+        cast(Subscription.connected_squads, String).like(f'%{squad_uuid}%') for squad_uuid in retired_squad_uuids
+    ]
+
+    while True:
+        subscriptions = (
+            (
+                await db.execute(
+                    select(Subscription)
+                    .where(
+                        Subscription.id > last_id,
+                        or_(*squad_filters),
+                    )
+                    .order_by(Subscription.id)
+                    .limit(batch_size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not subscriptions:
+            break
+
+        for subscription in subscriptions:
+            current = extract_squad_uuids(subscription.connected_squads)
+            desired = [squad_uuid for squad_uuid in current if squad_uuid not in retired_squad_uuids]
+            if desired != current:
+                subscription.connected_squads = desired
+                updated += 1
+
+        if len(subscriptions) < batch_size:
+            break
+
+        await db.flush()
+        last_id = subscriptions[-1].id
+        for subscription in subscriptions:
+            db.expunge(subscription)
+
     return updated
 
 

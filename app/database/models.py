@@ -1927,6 +1927,14 @@ class TapRewardDailyStats(Base):
 
 class Subscription(Base):
     __tablename__ = 'subscriptions'
+    __table_args__ = (
+        Index('ix_subscriptions_status_end_date', 'status', 'end_date'),
+        Index(
+            'ix_subscriptions_metered_blocked_at',
+            'metered_access_blocked',
+            'metered_access_blocked_at',
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
