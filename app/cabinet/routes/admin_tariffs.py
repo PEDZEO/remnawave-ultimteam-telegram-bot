@@ -36,7 +36,7 @@ from app.services.device_traffic_bonus import calculate_device_traffic_bonus
 from app.services.metered_traffic_policy import (
     build_subscription_squads,
     disable_metered_access,
-    get_metered_squad_uuid,
+    get_metered_squad_uuids,
     panel_traffic_limit_bytes,
     reset_metered_cycle,
 )
@@ -1005,9 +1005,9 @@ async def _background_sync_squads(
                                 tariff=tariff,
                             )
                             if reset_metered_cycles and tariff.special_servers_enabled:
-                                metered_squad_uuid = get_metered_squad_uuid()
-                                if metered_squad_uuid and metered_squad_uuid not in desired_squads:
-                                    desired_squads.append(metered_squad_uuid)
+                                for metered_squad_uuid in get_metered_squad_uuids():
+                                    if metered_squad_uuid not in desired_squads:
+                                        desired_squads.append(metered_squad_uuid)
 
                             updated_user = await api.update_user(
                                 uuid=remnawave_uuid,

@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database.models import Subscription, User
 from app.services.metered_traffic_policy import (
+    extract_squad_uuids,
     get_metered_node_multipliers,
     normalize_metered_node_multiplier,
     serialize_metered_node_multipliers,
@@ -96,6 +97,8 @@ class MeteredTrafficConfigurationUpdate(BaseModel):
     """Complete split traffic configuration managed from the admin cabinet."""
 
     enabled: bool
+    squad_uuids: list[str] = Field(default_factory=list)
+    # Kept for rolling deployments and older cabinet versions.
     squad_uuid: str = ''
     metered_node_uuids: list[str] = Field(default_factory=list)
     metered_node_multipliers: dict[str, float] = Field(default_factory=dict)
@@ -194,13 +197,12 @@ def _coerce_value(key: str, value: Any) -> Any:
 
     if key in {'ULTIMA_METERED_SQUAD_UUID', 'ULTIMA_METERED_NODE_UUIDS'}:
         parts = [part.strip() for part in str(normalized).split(',') if part.strip()]
-        if key == 'ULTIMA_METERED_SQUAD_UUID' and len(parts) > 1:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Only one squad UUID is allowed')
         try:
             for part in parts:
                 UUID(part)
         except ValueError as error:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Value must contain valid UUIDs') from error
+        normalized = ','.join(dict.fromkeys(parts))
         normalized = ','.join(dict.fromkeys(parts))
 
     if key in {'ULTIMA_TRAFFIC_WARNING_MESSAGE_RU', 'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU'}:
@@ -299,6 +301,31 @@ def _normalize_uuid_list(values: list[str], *, field_name: str) -> list[str]:
     return normalized
 
 
+def _normalize_metered_squad_selection(payload: MeteredTrafficConfigurationUpdate) -> list[str]:
+    raw_squad_uuids = (
+        payload.squad_uuids
+        if 'squad_uuids' in payload.model_fields_set
+        else ([payload.squad_uuid] if payload.squad_uuid.strip() else [])
+    )
+    return _normalize_uuid_list(raw_squad_uuids, field_name='Список тарифицируемых сквадов')
+
+
+async def _remove_retired_metered_squads(db: AsyncSession, retired_squad_uuids: set[str]) -> int:
+    """Remove squads that stopped being technical from stored subscriptions."""
+    if not retired_squad_uuids:
+        return 0
+
+    subscriptions = (await db.execute(select(Subscription))).scalars().all()
+    updated = 0
+    for subscription in subscriptions:
+        current = extract_squad_uuids(subscription.connected_squads)
+        desired = [squad_uuid for squad_uuid in current if squad_uuid not in retired_squad_uuids]
+        if desired != current:
+            subscription.connected_squads = desired
+            updated += 1
+    return updated
+
+
 def _normalize_metered_node_multipliers(
     node_uuids: list[str],
     raw_values: dict[str, float],
@@ -375,6 +402,10 @@ async def _metered_configuration_payload(
         str(bot_configuration_service.get_current_value('ULTIMA_METERED_NODE_UUIDS') or '').split(','),
         field_name='Список нод',
     )
+    configured_squads = _normalize_uuid_list(
+        str(bot_configuration_service.get_current_value('ULTIMA_METERED_SQUAD_UUID') or '').split(','),
+        field_name='Список сквадов',
+    )
     configured_multipliers = get_metered_node_multipliers()
     topology_errors = []
     for node in nodes:
@@ -386,7 +417,8 @@ async def _metered_configuration_payload(
     return {
         'configuration': {
             'enabled': bool(bot_configuration_service.get_current_value('ULTIMA_METERED_TRAFFIC_ENABLED')),
-            'squad_uuid': str(bot_configuration_service.get_current_value('ULTIMA_METERED_SQUAD_UUID') or ''),
+            'squad_uuids': configured_squads,
+            'squad_uuid': configured_squads[0] if configured_squads else '',
             'metered_node_uuids': configured_nodes,
             'metered_node_multipliers': configured_multipliers,
             'check_interval_seconds': int(
@@ -573,33 +605,37 @@ async def update_metered_traffic_configuration(
     """Validate and apply split traffic settings and node multipliers together."""
     squads, nodes = await _load_metered_topology()
 
-    squad_uuid = ''
-    if payload.squad_uuid.strip():
-        try:
-            squad_uuid = str(UUID(payload.squad_uuid.strip()))
-        except ValueError as error:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Выбран некорректный UUID сквада') from error
+    squad_uuids = _normalize_metered_squad_selection(payload)
+    previous_squad_uuids = _normalize_uuid_list(
+        str(bot_configuration_service.get_current_value('ULTIMA_METERED_SQUAD_UUID') or '').split(','),
+        field_name='Текущий список тарифицируемых сквадов',
+    )
+    retired_squad_uuids = set(previous_squad_uuids) - set(squad_uuids)
 
     node_uuids = _normalize_uuid_list(payload.metered_node_uuids, field_name='Список тарифицируемых нод')
     node_multipliers = _normalize_metered_node_multipliers(node_uuids, payload.metered_node_multipliers)
     available_squads = {squad.uuid for squad in squads}
     available_nodes = {node.uuid for node in nodes}
 
-    if squad_uuid and squad_uuid not in available_squads:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Выбранный сквад больше не существует в Remnawave')
+    missing_squads = set(squad_uuids) - available_squads
+    if missing_squads:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f'Выбранные сквады больше не существуют: {", ".join(sorted(missing_squads))}',
+        )
     missing_nodes = set(node_uuids) - available_nodes
     if missing_nodes:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f'Выбранные ноды больше не существуют: {", ".join(sorted(missing_nodes))}',
         )
-    if payload.enabled and not squad_uuid:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Для включения выберите тарифицируемый сквад')
+    if payload.enabled and not squad_uuids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Для включения выберите хотя бы один тарифицируемый сквад')
     if payload.enabled and not node_uuids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Для включения выберите хотя бы одну тарифицируемую ноду')
 
     values = {
-        'ULTIMA_METERED_SQUAD_UUID': squad_uuid,
+        'ULTIMA_METERED_SQUAD_UUID': ','.join(squad_uuids),
         'ULTIMA_METERED_NODE_UUIDS': ','.join(node_uuids),
         'ULTIMA_METERED_NODE_MULTIPLIERS': serialize_metered_node_multipliers(node_multipliers),
         'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': payload.check_interval_seconds,
@@ -639,6 +675,7 @@ async def update_metered_traffic_configuration(
         for key, value in coerced_values.items():
             await bot_configuration_service.set_value(db, key, value)
             settings_mutated = True
+        retired_squads_removed = await _remove_retired_metered_squads(db, retired_squad_uuids)
         await db.commit()
     except Exception as error:
         await db.rollback()
@@ -687,7 +724,8 @@ async def update_metered_traffic_configuration(
         'Admin updated split traffic configuration',
         telegram_id=admin.telegram_id,
         enabled=payload.enabled,
-        squad_uuid=squad_uuid,
+        squad_uuids=squad_uuids,
+        retired_squads_removed=retired_squads_removed,
         metered_nodes=len(node_uuids),
         nodes_updated=nodes_updated,
     )

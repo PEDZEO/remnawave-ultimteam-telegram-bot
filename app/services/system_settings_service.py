@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 
 SETTING_TITLES: dict[str, str] = {
     'ULTIMA_METERED_TRAFFIC_ENABLED': 'Раздельный учет трафика',
-    'ULTIMA_METERED_SQUAD_UUID': 'Squad тарифицируемых серверов',
+    'ULTIMA_METERED_SQUAD_UUID': 'Сквады тарифицируемых серверов',
     'ULTIMA_METERED_NODE_UUIDS': 'Ноды тарифицируемых серверов',
     'ULTIMA_METERED_NODE_MULTIPLIERS': 'Коэффициенты тарифицируемых нод',
     'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': 'Интервал проверки',
@@ -1187,17 +1187,17 @@ class BotConfigurationService:
         },
         'ULTIMA_METERED_TRAFFIC_ENABLED': {
             'description': (
-                'Включает отдельный лимит для выбранного squad. Глобальный лимит пользователя '
-                'в Remnawave становится безлимитным, а при исчерпании отключается только этот squad.'
+                'Включает отдельный лимит для выбранных squad. Глобальный лимит пользователя '
+                'в Remnawave становится безлимитным, а при исчерпании отключаются только эти squad.'
             ),
             'format': 'Булево значение.',
-            'warning': 'Включайте только после заполнения UUID squad и добавления его в нужные тарифы.',
+            'warning': 'Включайте только после выбора squad и разрешения спецсерверов в нужных тарифах.',
             'dependencies': 'ULTIMA_METERED_SQUAD_UUID, ULTIMA_METERED_NODE_UUIDS',
         },
         'ULTIMA_METERED_SQUAD_UUID': {
-            'description': 'UUID отдельного internal squad с тарифицируемыми нодами.',
-            'format': 'Один UUID.',
-            'example': '00000000-0000-0000-0000-000000000000',
+            'description': 'UUID внутренних squad с тарифицируемыми нодами.',
+            'format': 'Один или несколько UUID через запятую.',
+            'example': 'uuid-squad-1,uuid-squad-2',
         },
         'ULTIMA_METERED_NODE_UUIDS': {
             'description': 'UUID нод, трафик которых должен расходовать лимит.',
@@ -1212,7 +1212,7 @@ class BotConfigurationService:
             'warning': 'Изменяйте через отдельную страницу раздельного трафика.',
         },
         'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': {
-            'description': 'Как часто бот сверяет счетчики и доступ к squad.',
+            'description': 'Как часто бот сверяет счетчики и доступ к выбранным squad.',
             'format': 'Целое число от 15 до 3600 секунд.',
             'example': '60',
         },

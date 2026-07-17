@@ -28,6 +28,7 @@ from app.services.metered_traffic_policy import (
     get_metered_node_multipliers,
     get_metered_node_uuids,
     get_metered_squad_uuid,
+    get_metered_squad_uuids,
     get_metered_warning_percent,
     is_metered_traffic_enabled,
     restore_metered_access_if_available,
@@ -77,6 +78,7 @@ class MeteredTrafficService:
             'enabled': self.is_enabled(),
             'running': self._task is not None and not self._task.done(),
             'squad_uuid': get_metered_squad_uuid(),
+            'squad_uuids': get_metered_squad_uuids(),
             'node_uuids': get_metered_node_uuids(),
             'node_multipliers': get_metered_node_multipliers(),
             'interval_seconds': get_metered_check_interval_seconds(),
@@ -94,7 +96,7 @@ class MeteredTrafficService:
         logger.info(
             'Metered traffic monitor started',
             interval_seconds=get_metered_check_interval_seconds(),
-            squad_uuid=get_metered_squad_uuid(),
+            squad_uuids=get_metered_squad_uuids(),
         )
 
     async def stop(self) -> None:
@@ -272,9 +274,12 @@ class MeteredTrafficService:
 
             limit_gb = max(0, int(subscription.traffic_limit_gb or 0))
             limit_bytes = limit_gb * BYTES_PER_GB
-            squad_uuid = get_metered_squad_uuid()
+            squad_uuids = get_metered_squad_uuids()
             connected_squads = extract_squad_uuids(subscription.connected_squads)
-            had_metered_entitlement = squad_uuid in connected_squads or subscription.metered_access_blocked
+            had_metered_entitlement = (
+                any(squad_uuid in connected_squads for squad_uuid in squad_uuids)
+                or subscription.metered_access_blocked
+            )
 
             transition_blocked = False
             transition_restored = False

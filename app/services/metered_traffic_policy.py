@@ -16,13 +16,21 @@ MAX_METERED_NODE_MULTIPLIER = 100.0
 def is_metered_traffic_enabled() -> bool:
     return bool(
         getattr(settings, 'ULTIMA_METERED_TRAFFIC_ENABLED', False)
-        and get_metered_squad_uuid()
+        and get_metered_squad_uuids()
         and get_metered_node_uuids()
     )
 
 
+def get_metered_squad_uuids() -> list[str]:
+    """Return all technical squads, including legacy single-value configuration."""
+    raw_value = str(getattr(settings, 'ULTIMA_METERED_SQUAD_UUID', '') or '')
+    return list(dict.fromkeys(part.strip() for part in raw_value.split(',') if part.strip()))
+
+
 def get_metered_squad_uuid() -> str:
-    return str(getattr(settings, 'ULTIMA_METERED_SQUAD_UUID', '') or '').strip()
+    """Return the first technical squad for compatibility with older integrations."""
+    squad_uuids = get_metered_squad_uuids()
+    return squad_uuids[0] if squad_uuids else ''
 
 
 def get_metered_node_uuids() -> list[str]:
@@ -107,8 +115,8 @@ def get_customer_squad_uuids(active_internal_squads: Any) -> list[str]:
     if not is_metered_traffic_enabled():
         return squads
 
-    metered_squad_uuid = get_metered_squad_uuid()
-    return [squad_uuid for squad_uuid in squads if squad_uuid != metered_squad_uuid]
+    metered_squad_uuids = set(get_metered_squad_uuids())
+    return [squad_uuid for squad_uuid in squads if squad_uuid not in metered_squad_uuids]
 
 
 def tariff_allows_special_servers(tariff: Any) -> bool:
@@ -159,19 +167,20 @@ def build_subscription_squads(
     if blocked or (limit_gb > 0 and used_gb >= limit_gb):
         return selected
 
-    metered_squad_uuid = get_metered_squad_uuid()
-    if metered_squad_uuid and metered_squad_uuid not in selected:
-        selected.append(metered_squad_uuid)
+    for metered_squad_uuid in get_metered_squad_uuids():
+        if metered_squad_uuid not in selected:
+            selected.append(metered_squad_uuid)
     return selected
 
 
 def preserve_metered_squad(active_internal_squads: Any, selected_customer_squads: Any) -> list[str]:
     """Keep the technical squad while replacing the customer-selected squads."""
     selected = get_customer_squad_uuids(selected_customer_squads)
-    metered_squad_uuid = get_metered_squad_uuid()
     current = extract_squad_uuids(active_internal_squads)
-    if is_metered_traffic_enabled() and metered_squad_uuid in current and metered_squad_uuid not in selected:
-        selected.append(metered_squad_uuid)
+    if is_metered_traffic_enabled():
+        for metered_squad_uuid in get_metered_squad_uuids():
+            if metered_squad_uuid in current and metered_squad_uuid not in selected:
+                selected.append(metered_squad_uuid)
     return selected
 
 
@@ -229,9 +238,10 @@ def reset_metered_cycle(
 
 
 def disable_metered_access(subscription: Any, *, panel_counter_bytes: int | None = None) -> bool:
-    """Remove only the technical squad and clear stale metered state."""
+    """Remove only technical squads and clear stale metered state."""
     before = extract_squad_uuids(getattr(subscription, 'connected_squads', None))
-    _remove_squad(subscription, get_metered_squad_uuid())
+    for squad_uuid in get_metered_squad_uuids():
+        _remove_squad(subscription, squad_uuid)
     after = extract_squad_uuids(getattr(subscription, 'connected_squads', None))
 
     if panel_counter_bytes is not None:
@@ -260,11 +270,12 @@ def restore_metered_access_if_available(subscription: Any) -> bool:
     if limit_gb > 0 and used_gb >= limit_gb:
         return False
 
-    metered_squad_uuid = get_metered_squad_uuid()
     current_squads = extract_squad_uuids(getattr(subscription, 'connected_squads', None))
     was_blocked = bool(getattr(subscription, 'metered_access_blocked', False))
-    was_missing = metered_squad_uuid not in current_squads
-    _add_squad(subscription, metered_squad_uuid)
+    metered_squad_uuids = get_metered_squad_uuids()
+    was_missing = any(squad_uuid not in current_squads for squad_uuid in metered_squad_uuids)
+    for squad_uuid in metered_squad_uuids:
+        _add_squad(subscription, squad_uuid)
     subscription.metered_access_blocked = False
     subscription.metered_access_blocked_at = None
     subscription.metered_warning_percent = 0
@@ -272,8 +283,8 @@ def restore_metered_access_if_available(subscription: Any) -> bool:
 
 
 def block_metered_access(subscription: Any) -> None:
-    squad_uuid = get_metered_squad_uuid()
-    _remove_squad(subscription, squad_uuid)
+    for squad_uuid in get_metered_squad_uuids():
+        _remove_squad(subscription, squad_uuid)
     subscription.metered_access_blocked = True
     subscription.metered_access_blocked_at = datetime.now(UTC)
     subscription.metered_warning_percent = 100

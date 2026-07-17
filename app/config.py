@@ -136,7 +136,7 @@ class Settings(BaseSettings):
         'Докупить трафик можно сейчас — дополнительный пакет будет действовать 30 дней.'
     )
 
-    # Split traffic mode: only a dedicated Remnawave internal squad is removed
+    # Split traffic mode: only dedicated Remnawave internal squads are removed
     # when the commercial traffic quota is exhausted. The global panel limit is
     # forced to unlimited so standard zero-multiplier nodes remain available.
     ULTIMA_METERED_TRAFFIC_ENABLED: bool = False

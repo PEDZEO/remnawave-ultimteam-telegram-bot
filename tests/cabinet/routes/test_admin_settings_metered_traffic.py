@@ -9,11 +9,15 @@ from fastapi import HTTPException
 from app.cabinet.routes import admin_settings
 from app.cabinet.routes.admin_settings import (
     MeteredTrafficConfigurationUpdate,
+    _metered_configuration_payload,
+    _normalize_metered_squad_selection,
+    _remove_retired_metered_squads,
     _serialize_exhausted_subscription,
 )
 
 
 SQUAD_UUID = '11111111-1111-1111-1111-111111111111'
+SQUAD_UUID_2 = '11111111-1111-1111-1111-222222222222'
 METERED_NODE_UUID = '22222222-2222-2222-2222-222222222222'
 UNLIMITED_NODE_UUID = '33333333-3333-3333-3333-333333333333'
 
@@ -39,11 +43,14 @@ class FakeDb:
     async def rollback(self) -> None:
         self.events.append('rollback')
 
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
 
 def _payload(**overrides: Any) -> MeteredTrafficConfigurationUpdate:
     values = {
         'enabled': True,
-        'squad_uuid': SQUAD_UUID,
+        'squad_uuids': [SQUAD_UUID, SQUAD_UUID_2],
         'metered_node_uuids': [METERED_NODE_UUID],
         'metered_node_multipliers': {METERED_NODE_UUID: 2},
         'check_interval_seconds': 60,
@@ -53,6 +60,81 @@ def _payload(**overrides: Any) -> MeteredTrafficConfigurationUpdate:
     }
     values.update(overrides)
     return MeteredTrafficConfigurationUpdate(**values)
+
+
+def test_multiple_squads_are_normalized_and_legacy_single_value_still_works() -> None:
+    assert _normalize_metered_squad_selection(
+        _payload(squad_uuids=[SQUAD_UUID, SQUAD_UUID_2, SQUAD_UUID])
+    ) == [SQUAD_UUID, SQUAD_UUID_2]
+
+    legacy_values = _payload().model_dump(exclude={'squad_uuids'})
+    legacy_values['squad_uuid'] = SQUAD_UUID
+    legacy_payload = MeteredTrafficConfigurationUpdate.model_validate(legacy_values)
+
+    assert _normalize_metered_squad_selection(legacy_payload) == [SQUAD_UUID]
+
+
+@pytest.mark.asyncio
+async def test_retired_technical_squad_is_removed_from_stored_subscriptions() -> None:
+    subscriptions = [
+        SimpleNamespace(connected_squads=[SQUAD_UUID, SQUAD_UUID_2]),
+        SimpleNamespace(connected_squads=[SQUAD_UUID_2]),
+        SimpleNamespace(connected_squads=[]),
+    ]
+    db = SimpleNamespace(
+        execute=lambda *args, **kwargs: None,
+    )
+
+    async def execute(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: subscriptions))
+
+    db.execute = execute
+
+    updated = await _remove_retired_metered_squads(db, {SQUAD_UUID_2})
+
+    assert updated == 2
+    assert subscriptions[0].connected_squads == [SQUAD_UUID]
+    assert subscriptions[1].connected_squads == []
+
+
+@pytest.mark.asyncio
+async def test_configuration_payload_exposes_all_selected_squads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        'ULTIMA_METERED_TRAFFIC_ENABLED': True,
+        'ULTIMA_METERED_SQUAD_UUID': f'{SQUAD_UUID},{SQUAD_UUID_2}',
+        'ULTIMA_METERED_NODE_UUIDS': '',
+        'ULTIMA_METERED_CHECK_INTERVAL_SECONDS': 60,
+        'ULTIMA_METERED_WARNING_PERCENT': 80,
+        'ULTIMA_METERED_SERVER_LABEL': 'Спецсерверы',
+        'ULTIMA_METERED_EXHAUSTED_MESSAGE_RU': 'Лимит исчерпан',
+    }
+
+    monkeypatch.setattr(
+        admin_settings.bot_configuration_service,
+        'get_current_value',
+        values.get,
+    )
+
+    async def fake_status(db: Any) -> dict[str, Any]:
+        return {'enabled': True, 'squad_uuids': [SQUAD_UUID, SQUAD_UUID_2]}
+
+    monkeypatch.setattr(admin_settings, '_metered_status_payload', fake_status)
+
+    response = await _metered_configuration_payload(
+        SimpleNamespace(),
+        topology=(
+            [
+                SimpleNamespace(uuid=SQUAD_UUID, name='Metered 1', members_count=1, inbounds_count=0),
+                SimpleNamespace(uuid=SQUAD_UUID_2, name='Metered 2', members_count=1, inbounds_count=0),
+            ],
+            [],
+        ),
+    )
+
+    assert response['configuration']['squad_uuids'] == [SQUAD_UUID, SQUAD_UUID_2]
+    assert response['configuration']['squad_uuid'] == SQUAD_UUID
 
 
 def test_exhausted_subscription_payload_contains_admin_action_context() -> None:
@@ -92,7 +174,10 @@ async def test_configuration_updates_node_coefficients_before_starting_monitor(
 ) -> None:
     events: list[str] = []
     saved_values: dict[str, Any] = {}
-    squads = [SimpleNamespace(uuid=SQUAD_UUID, name='Metered', members_count=10, inbounds=[])]
+    squads = [
+        SimpleNamespace(uuid=SQUAD_UUID, name='Metered 1', members_count=10, inbounds=[]),
+        SimpleNamespace(uuid=SQUAD_UUID_2, name='Metered 2', members_count=8, inbounds=[]),
+    ]
     nodes = [
         SimpleNamespace(
             uuid=METERED_NODE_UUID,
@@ -162,7 +247,7 @@ async def test_configuration_updates_node_coefficients_before_starting_monitor(
         f'node:0:{UNLIMITED_NODE_UUID}',
     ]
     assert events[-2:] == ['commit', 'start']
-    assert saved_values['ULTIMA_METERED_SQUAD_UUID'] == SQUAD_UUID
+    assert saved_values['ULTIMA_METERED_SQUAD_UUID'] == f'{SQUAD_UUID},{SQUAD_UUID_2}'
     assert saved_values['ULTIMA_METERED_NODE_UUIDS'] == METERED_NODE_UUID
     assert saved_values['ULTIMA_METERED_NODE_MULTIPLIERS'] == f'{{"{METERED_NODE_UUID}":2.0}}'
     assert saved_values['ULTIMA_METERED_TRAFFIC_ENABLED'] is True
@@ -170,7 +255,7 @@ async def test_configuration_updates_node_coefficients_before_starting_monitor(
 
 @pytest.mark.asyncio
 async def test_configuration_requires_metered_node_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    squads = [SimpleNamespace(uuid=SQUAD_UUID)]
+    squads = [SimpleNamespace(uuid=SQUAD_UUID), SimpleNamespace(uuid=SQUAD_UUID_2)]
     nodes = [SimpleNamespace(uuid=METERED_NODE_UUID)]
 
     async def fake_load_topology() -> tuple[list[Any], list[Any]]:
@@ -190,8 +275,29 @@ async def test_configuration_requires_metered_node_when_enabled(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+async def test_configuration_requires_at_least_one_squad_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    squads = [SimpleNamespace(uuid=SQUAD_UUID), SimpleNamespace(uuid=SQUAD_UUID_2)]
+    nodes = [SimpleNamespace(uuid=METERED_NODE_UUID)]
+
+    async def fake_load_topology() -> tuple[list[Any], list[Any]]:
+        return squads, nodes
+
+    monkeypatch.setattr(admin_settings, '_load_metered_topology', fake_load_topology)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_settings.update_metered_traffic_configuration(
+            _payload(squad_uuids=[]),
+            admin=SimpleNamespace(telegram_id=42),
+            db=FakeDb([]),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert 'хотя бы один' in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_configuration_rejects_out_of_range_node_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:
-    squads = [SimpleNamespace(uuid=SQUAD_UUID)]
+    squads = [SimpleNamespace(uuid=SQUAD_UUID), SimpleNamespace(uuid=SQUAD_UUID_2)]
     nodes = [SimpleNamespace(uuid=METERED_NODE_UUID)]
 
     async def fake_load_topology() -> tuple[list[Any], list[Any]]:
@@ -215,7 +321,7 @@ async def test_configuration_restores_coefficients_and_monitor_after_partial_fai
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    squads = [SimpleNamespace(uuid=SQUAD_UUID)]
+    squads = [SimpleNamespace(uuid=SQUAD_UUID), SimpleNamespace(uuid=SQUAD_UUID_2)]
     nodes = [
         SimpleNamespace(uuid=METERED_NODE_UUID, consumption_multiplier=0),
         SimpleNamespace(uuid=UNLIMITED_NODE_UUID, consumption_multiplier=1),
