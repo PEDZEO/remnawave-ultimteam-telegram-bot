@@ -578,7 +578,7 @@ class RemnaWaveAPI:
 
     async def get_user_by_uuid(self, uuid: str) -> RemnaWaveUser | None:
         try:
-            response = await self._make_request('GET', f'/api/users/{uuid}')
+            response = await self._make_request('GET', f'/api/users/{uuid}', quiet_statuses=(404,))
             user = self._parse_user(response['response'])
             return await self.enrich_user_with_happ_link(user)
         except RemnaWaveAPIError as e:

@@ -9,6 +9,27 @@ from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, TrafficL
 
 
 @pytest.mark.asyncio
+async def test_get_user_by_uuid_treats_not_found_as_expected(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = RemnaWaveAPI('https://panel.example', 'token')
+    calls: list[tuple[str, str, tuple[int, ...]]] = []
+
+    async def fake_make_request(
+        method: str,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        quiet_statuses: tuple[int, ...] = (),
+    ) -> dict[str, Any]:
+        calls.append((method, endpoint, quiet_statuses))
+        raise RemnaWaveAPIError('User with specified params not found', status_code=404)
+
+    monkeypatch.setattr(api, '_make_request', fake_make_request)
+
+    assert await api.get_user_by_uuid('missing-user') is None
+    assert calls == [('GET', '/api/users/missing-user', (404,))]
+
+
+@pytest.mark.asyncio
 async def test_happ_crypto_link_is_generated_locally(monkeypatch: pytest.MonkeyPatch) -> None:
     api = RemnaWaveAPI('https://panel.example', 'token')
 

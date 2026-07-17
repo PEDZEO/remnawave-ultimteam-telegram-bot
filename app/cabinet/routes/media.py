@@ -6,6 +6,7 @@ import structlog
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel
@@ -138,10 +139,41 @@ async def upload_media(
             file_unique_id=getattr(media, 'file_unique_id', None),
             media_url=media_url,
         )
-    except HTTPException:
-        raise
+    except TelegramBadRequest as error:
+        logger.warning(
+            'Telegram rejected media uploaded by user',
+            telegram_id=user.telegram_id,
+            media_type=media_type_normalized,
+            telegram_error=str(error),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Telegram rejected this file. Check its format, size, and dimensions.',
+        ) from error
+    except TelegramForbiddenError as error:
+        logger.exception(
+            'Telegram media upload chat is unavailable',
+            telegram_id=user.telegram_id,
+            target_chat_id=target_chat_id,
+            error=error,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Media storage chat is unavailable',
+        ) from error
+    except (TelegramNetworkError, TelegramRetryAfter) as error:
+        logger.warning(
+            'Telegram media upload is temporarily unavailable',
+            telegram_id=user.telegram_id,
+            media_type=media_type_normalized,
+            telegram_error=str(error),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Media upload is temporarily unavailable. Try again later.',
+        ) from error
     except Exception as error:
-        logger.error('Failed to upload media for user', telegram_id=user.telegram_id, error=error)
+        logger.exception('Failed to upload media for user', telegram_id=user.telegram_id, error=error)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to upload media',
