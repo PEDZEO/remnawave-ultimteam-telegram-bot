@@ -1182,7 +1182,7 @@ async def confirm_account_link_code(
 
     source_user.cabinet_last_login = datetime.now(UTC).replace(tzinfo=None)
     await db.commit()
-    auth_response = _create_auth_response(source_user)
+    auth_response = await _create_auth_response(source_user, db)
     await _store_refresh_token(db, source_user.id, auth_response.refresh_token, device_info='account-linking')
 
     logger.info('Account linking auth session switched to source account', source_user_id=source_user.id)

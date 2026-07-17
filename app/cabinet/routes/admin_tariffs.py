@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.database.crud.server_squad import get_all_server_squads
 from app.database.crud.subscription import get_subscription_total_with_purchased_traffic
@@ -119,6 +120,16 @@ def _apply_tariff_limits_to_subscription(
         subscription.device_limit = target_device_limit
     subscription.subscription_url = subscription_url
     subscription.subscription_crypto_link = crypto_link
+
+
+def _tariff_apply_candidate_clause(tariff_id: int, now: datetime) -> ColumnElement[bool]:
+    """Select only live paid subscriptions for a tariff-wide limits rollout."""
+    return and_(
+        Subscription.tariff_id == tariff_id,
+        Subscription.status.in_([SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value]),
+        Subscription.is_trial.is_(False),
+        Subscription.end_date > now,
+    )
 
 
 async def _get_tariff_servers(
@@ -507,8 +518,7 @@ async def update_existing_tariff(
         'external_squad_uuid' in request.model_fields_set and tariff.external_squad_uuid != old_external_squad
     )
     special_servers_changed = (
-        request.special_servers_enabled is not None
-        and tariff.special_servers_enabled != old_special_servers_enabled
+        request.special_servers_enabled is not None and tariff.special_servers_enabled != old_special_servers_enabled
     )
     if squads_changed or ext_squad_changed or special_servers_changed:
         asyncio.create_task(
@@ -706,13 +716,7 @@ async def apply_tariff_limits_to_active_subscriptions(
         select(Subscription)
         .join(User, Subscription.user_id == User.id)
         .options(joinedload(Subscription.user), joinedload(Subscription.tariff))
-        .where(
-            and_(
-                Subscription.tariff_id == tariff_id,
-                Subscription.status.in_([SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value]),
-                Subscription.end_date > now,
-            )
-        )
+        .where(_tariff_apply_candidate_clause(tariff_id, now))
     )
     subscriptions = list(result.unique().scalars().all())
 

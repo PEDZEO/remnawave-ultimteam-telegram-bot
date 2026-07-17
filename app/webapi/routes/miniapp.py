@@ -23,6 +23,7 @@ from app.database.crud.rules import get_rules_by_language
 from app.database.crud.subscription import (
     create_trial_subscription,
     extend_subscription,
+    get_subscription_base_traffic_limit,
     update_subscription_autopay,
 )
 from app.database.crud.transaction import (
@@ -32,11 +33,12 @@ from app.database.crud.transaction import (
 from app.database.crud.user import get_user_by_telegram_id, subtract_user_balance
 from app.database.models import (
     Subscription,
+    Tariff,
     Transaction,
     TransactionType,
     User,
 )
-from app.services.device_traffic_bonus import sync_device_traffic_bonus
+from app.services.device_traffic_bonus import replace_traffic_package, sync_device_traffic_bonus
 from app.services.faq_service import FaqService
 from app.services.maintenance_service import maintenance_service
 from app.services.payment_service import PaymentService, get_wata_payment_by_link_id
@@ -4320,11 +4322,11 @@ async def update_subscription_traffic_endpoint(
         allowed_statuses={'active', 'trial'},
     )
     _validate_subscription_id(payload.subscription_id, subscription)
-    old_traffic = subscription.traffic_limit_gb
+    old_traffic = get_subscription_base_traffic_limit(subscription)
 
     new_traffic = resolve_new_traffic_value(payload)
 
-    if new_traffic == subscription.traffic_limit_gb:
+    if new_traffic == old_traffic:
         return MiniAppSubscriptionUpdateResponse(success=True, message='No changes')
 
     ensure_traffic_update_allowed(new_traffic)
@@ -4342,7 +4344,8 @@ async def update_subscription_traffic_endpoint(
         months_remaining=months_remaining,
     )
 
-    subscription.traffic_limit_gb = new_traffic
+    tariff = await db.get(Tariff, subscription.tariff_id) if subscription.tariff_id else None
+    await replace_traffic_package(db, subscription, tariff, new_traffic)
     await finalize_subscription_update(
         db,
         user,

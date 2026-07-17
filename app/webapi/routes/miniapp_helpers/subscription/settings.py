@@ -9,6 +9,7 @@ from app.database.crud.server_squad import (
     get_available_server_squads,
     get_server_squad_by_uuid,
 )
+from app.database.crud.subscription import get_subscription_base_traffic_limit
 from app.database.models import Subscription, User
 from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import apply_percentage_discount, get_remaining_months
@@ -185,6 +186,7 @@ async def build_subscription_settings(
         servers_discount,
     )
 
+    base_traffic_limit = get_subscription_base_traffic_limit(subscription)
     traffic_options: list[MiniAppSubscriptionTrafficOption] = []
     if not settings.is_traffic_topup_blocked():
         for package in settings.get_traffic_packages():
@@ -206,7 +208,7 @@ async def build_subscription_settings(
                     label=None,
                     price_kopeks=discounted_price,
                     price_label=None,
-                    is_current=(gb_value == subscription.traffic_limit_gb),
+                    is_current=(gb_value == base_traffic_limit),
                     is_available=True,
                     description=None,
                 )
@@ -261,7 +263,7 @@ async def build_subscription_settings(
         traffic=MiniAppSubscriptionTrafficSettings(
             options=traffic_options,
             can_update=not settings.is_traffic_topup_blocked(),
-            current_value=subscription.traffic_limit_gb,
+            current_value=base_traffic_limit,
         ),
         devices=MiniAppSubscriptionDevicesSettings(
             options=devices_options,

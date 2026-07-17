@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.subscription import get_subscription_base_traffic_limit
 from app.database.models import Subscription, User
 from app.utils.pricing_utils import apply_percentage_discount, get_remaining_months
 
@@ -76,7 +77,7 @@ def calculate_traffic_upgrade_cost(
     period_hint_days = months_remaining * 30 if months_remaining > 0 else None
     traffic_discount = get_addon_discount_percent_for_user(user, 'traffic', period_hint_days)
 
-    old_price_per_month = settings.get_traffic_price(subscription.traffic_limit_gb)
+    old_price_per_month = settings.get_traffic_price(get_subscription_base_traffic_limit(subscription))
     new_price_per_month = settings.get_traffic_price(new_traffic)
 
     discounted_old_per_month, _ = apply_percentage_discount(old_price_per_month, traffic_discount)
@@ -115,7 +116,8 @@ async def charge_traffic_upgrade(
             },
         )
 
-    description = f'Переключение трафика с {subscription.traffic_limit_gb}GB на {new_traffic}GB'
+    current_traffic = get_subscription_base_traffic_limit(subscription)
+    description = f'Переключение трафика с {current_traffic}GB на {new_traffic}GB'
     success = await subtract_user_balance(
         db,
         user,

@@ -109,7 +109,7 @@ async def _load_app_config_async() -> dict[str, Any] | None:
 
 
 def _create_deep_link(
-    app: dict[str, Any], subscription_url: str, subscription_crypto_link: str | None = None
+    app: dict[str, Any], subscription_url: str | None, subscription_crypto_link: str | None = None
 ) -> str | None:
     """Create deep link for app with subscription URL."""
     if not isinstance(app, dict):

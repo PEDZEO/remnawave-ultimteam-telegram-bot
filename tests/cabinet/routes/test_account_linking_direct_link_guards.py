@@ -162,3 +162,37 @@ async def test_link_telegram_identity_rejects_foreign_telegram(
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail['code'] == 'link_code_identity_conflict'
+
+
+async def test_confirm_link_code_awaits_auth_response_with_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    current_user = build_user(1)
+    current_user.status = 'active'
+    source_user = build_user(2)
+    source_user.status = 'active'
+    source_user.cabinet_last_login = None
+    db = SimpleNamespace(commit=AsyncMock())
+    auth_response = SimpleNamespace(refresh_token='refresh-token')
+    create_auth_response = AsyncMock(return_value=auth_response)
+    store_refresh_token = AsyncMock()
+
+    monkeypatch.setattr(account_linking, 'preview_link_code', AsyncMock(return_value=source_user.id))
+    monkeypatch.setattr(account_linking, 'get_user_by_id', AsyncMock(return_value=source_user))
+    monkeypatch.setattr(account_linking, '_ensure_telegram_relink_allowed', AsyncMock())
+    monkeypatch.setattr(account_linking, 'confirm_link_code', AsyncMock(return_value=source_user))
+    monkeypatch.setattr(account_linking, '_create_auth_response', create_auth_response)
+    monkeypatch.setattr(account_linking, '_store_refresh_token', store_refresh_token)
+
+    result = await account_linking.confirm_account_link_code(
+        account_linking.LinkCodeConfirmRequest(code='123456'),
+        user=current_user,
+        db=db,
+    )
+
+    assert result is auth_response
+    create_auth_response.assert_awaited_once_with(source_user, db)
+    store_refresh_token.assert_awaited_once_with(
+        db,
+        source_user.id,
+        auth_response.refresh_token,
+        device_info='account-linking',
+    )

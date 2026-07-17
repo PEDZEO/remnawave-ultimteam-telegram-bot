@@ -398,7 +398,7 @@ async def submit_contest_answer(
 
     elif tpl.slug in {GAME_CIPHER, GAME_EMOJI, GAME_ANAGRAM}:
         correct = (round_obj.payload.get('answer') or '').upper()
-        is_winner = correct and answer.upper() == correct
+        is_winner = bool(correct and answer.upper() == correct)
 
     # Record attempt
     await create_attempt(db, round_id=round_obj.id, user_id=user.id, answer=str(answer), is_winner=is_winner)

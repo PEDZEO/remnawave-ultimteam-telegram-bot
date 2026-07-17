@@ -911,6 +911,10 @@ class RemnaWaveWebhookService:
     async def _handle_bandwidth_threshold(
         self, db: AsyncSession, user: User, subscription: Subscription | None, data: dict
     ) -> None:
+        if is_metered_traffic_enabled():
+            logger.debug('Ignoring panel bandwidth webhook in split traffic mode', user_id=user.id)
+            return
+
         notification_settings = (
             user.notification_settings if isinstance(getattr(user, 'notification_settings', None), dict) else {}
         )

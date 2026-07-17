@@ -42,6 +42,7 @@ from app.database.models import (
     UserPromoGroup,
     UserStatus,
 )
+from app.services.metered_traffic_policy import is_metered_traffic_enabled, panel_traffic_limit_bytes
 from app.utils.timezone import panel_datetime_to_utc
 
 from ..dependencies import get_cabinet_db, require_permission
@@ -978,7 +979,7 @@ async def update_user_subscription(
         is_trial = request.is_trial or False
         traffic_limit = request.traffic_limit_gb or 100
         device_limit = request.device_limit or 1
-        connected_squads = []
+        connected_squads: list[str] = []
 
         # Get tariff for settings if provided
         if request.tariff_id:
@@ -2434,12 +2435,12 @@ async def get_user_sync_status(
                         if diff_seconds > 3600 and not is_timezone_diff:  # More than 1 hour and not timezone
                             differences.append(f'End date differs by {diff_seconds / 3600:.1f} hours')
 
-                    if abs(bot_traffic_limit - panel_traffic_limit) > 1:
+                    if not is_metered_traffic_enabled() and abs(bot_traffic_limit - panel_traffic_limit) > 1:
                         differences.append(
                             f'Traffic limit: bot={bot_traffic_limit}GB, panel={panel_traffic_limit:.1f}GB'
                         )
 
-                    if abs(bot_traffic_used - panel_traffic_used) > 0.5:
+                    if not is_metered_traffic_enabled() and abs(bot_traffic_used - panel_traffic_used) > 0.5:
                         differences.append(
                             f'Traffic used: bot={bot_traffic_used:.2f}GB, panel={panel_traffic_used:.2f}GB'
                         )
@@ -2621,13 +2622,13 @@ async def sync_user_from_panel(
                     changes['status'] = {'old': sub.status, 'new': new_status}
                     sub.status = new_status
 
-                # Update traffic limit
-                panel_traffic_limit = (
-                    int(panel_user.traffic_limit_bytes / (1024**3)) if panel_user.traffic_limit_bytes else 0
-                )
-                if sub.traffic_limit_gb != panel_traffic_limit:
-                    changes['traffic_limit_gb'] = {'old': sub.traffic_limit_gb, 'new': panel_traffic_limit}
-                    sub.traffic_limit_gb = panel_traffic_limit
+                if not is_metered_traffic_enabled():
+                    panel_traffic_limit = (
+                        int(panel_user.traffic_limit_bytes / (1024**3)) if panel_user.traffic_limit_bytes else 0
+                    )
+                    if sub.traffic_limit_gb != panel_traffic_limit:
+                        changes['traffic_limit_gb'] = {'old': sub.traffic_limit_gb, 'new': panel_traffic_limit}
+                        sub.traffic_limit_gb = panel_traffic_limit
 
                 # Update device limit
                 panel_device_limit = panel_user.hwid_device_limit or 1
@@ -2651,7 +2652,7 @@ async def sync_user_from_panel(
                     sub.remnawave_short_uuid = panel_user.short_uuid
 
             # Update traffic usage if requested
-            if request.update_traffic and user.subscription:
+            if request.update_traffic and user.subscription and not is_metered_traffic_enabled():
                 panel_traffic_used = panel_user.used_traffic_bytes / (1024**3) if panel_user.used_traffic_bytes else 0
                 if abs((user.subscription.traffic_used_gb or 0) - panel_traffic_used) > 0.01:
                     changes['traffic_used_gb'] = {'old': user.subscription.traffic_used_gb, 'new': panel_traffic_used}
@@ -2662,7 +2663,11 @@ async def sync_user_from_panel(
                 from app.database.crud.subscription import create_paid_subscription
 
                 panel_traffic_limit = (
-                    int(panel_user.traffic_limit_bytes / (1024**3)) if panel_user.traffic_limit_bytes else 100
+                    settings.DEFAULT_TRAFFIC_LIMIT_GB
+                    if is_metered_traffic_enabled()
+                    else int(panel_user.traffic_limit_bytes / (1024**3))
+                    if panel_user.traffic_limit_bytes
+                    else 100
                 )
                 panel_expire_utc = panel_datetime_to_utc(panel_user.expire_at)
                 days_remaining = max(1, (panel_expire_utc - datetime.now(UTC)).days)
@@ -2780,7 +2785,7 @@ async def sync_user_to_panel(
         )
 
         hwid_limit = resolve_hwid_device_limit_for_payload(sub)
-        traffic_limit_bytes = sub.traffic_limit_gb * (1024**3) if sub.traffic_limit_gb > 0 else 0
+        traffic_limit_bytes = panel_traffic_limit_bytes(sub.traffic_limit_gb)
 
         async with service.get_api_client() as api:
             # Validate existing UUID

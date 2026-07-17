@@ -981,9 +981,7 @@ class TrafficMonitoringScheduler:
             time_str = check_time.strftime('%H:%M') if check_time else '00:00'
             info.append(f'Суточная: в {time_str}, порог {threshold} ГБ')
         if metered_traffic_service.is_enabled():
-            info.append(
-                f'Спецсерверы: каждые {metered_traffic_service.get_status()["interval_seconds"]} сек'
-            )
+            info.append(f'Спецсерверы: каждые {metered_traffic_service.get_status()["interval_seconds"]} сек')
         return '; '.join(info) if info else 'Отключен'
 
     async def _should_send_notification(self, user_uuid: str) -> bool:

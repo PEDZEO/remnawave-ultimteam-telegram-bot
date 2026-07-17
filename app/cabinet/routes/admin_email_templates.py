@@ -27,7 +27,7 @@ router = APIRouter(prefix='/admin/email-templates', tags=['Admin Email Templates
 
 # ============ Template type metadata ============
 
-TEMPLATE_TYPES = [
+TEMPLATE_TYPES: list[dict[str, Any]] = [
     {
         'type': 'balance_topup',
         'label': {'ru': 'Пополнение баланса', 'en': 'Balance Top-up', 'zh': '余额充值', 'ua': 'Поповнення балансу'},
@@ -337,7 +337,7 @@ SAMPLE_CONTEXTS: dict[str, dict[str, Any]] = {
     'password_reset': {'username': 'John', 'reset_url': 'https://example.com/reset?token=abc123', 'expire_hours': 1},
 }
 
-AVAILABLE_LANGUAGES = ['ru', 'en', 'zh', 'ua', 'fa']
+AVAILABLE_LANGUAGES: list[str] = ['ru', 'en', 'zh', 'ua', 'fa']
 
 
 # ============ Schemas ============

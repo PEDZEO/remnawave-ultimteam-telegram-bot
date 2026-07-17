@@ -14,13 +14,18 @@ from app.database.crud.subscription import (
     create_paid_subscription,
     create_trial_subscription,
     extend_subscription,
+    get_subscription_base_traffic_limit,
     get_subscription_by_user_id,
 )
 from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
 from app.database.models import PaymentMethod, ServerSquad, Subscription, Tariff, TransactionType, User
-from app.services.device_traffic_bonus import rebuild_traffic_with_device_bonus, sync_device_traffic_bonus
+from app.services.device_traffic_bonus import (
+    rebuild_traffic_with_device_bonus,
+    replace_traffic_package,
+    sync_device_traffic_bonus,
+)
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
     build_subscription_squads,
@@ -4173,7 +4178,7 @@ async def switch_traffic_package(
             detail='Traffic management is only available for paid subscriptions',
         )
 
-    current_traffic = user.subscription.traffic_limit_gb or 0
+    current_traffic = get_subscription_base_traffic_limit(user.subscription)
     new_traffic = request.gb
 
     if current_traffic == new_traffic:
@@ -4250,10 +4255,8 @@ async def switch_traffic_package(
         # Downgrade - no charge, no refund
         charged = 0
 
-    # Update subscription
-    user.subscription.traffic_limit_gb = new_traffic
-    user.subscription.purchased_traffic_gb = 0  # Reset purchased traffic on switch
-    user.subscription.traffic_reset_at = None  # Reset traffic reset date
+    tariff = await db.get(Tariff, user.subscription.tariff_id) if user.subscription.tariff_id else None
+    await replace_traffic_package(db, user.subscription, tariff, new_traffic)
     user.subscription.updated_at = datetime.now(UTC)
     await db.commit()
 

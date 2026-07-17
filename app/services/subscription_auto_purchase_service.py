@@ -19,7 +19,11 @@ from app.database.crud.user import get_user_by_id, subtract_user_balance
 from app.database.models import Subscription, TransactionType, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
-from app.services.device_traffic_bonus import sync_device_traffic_bonus
+from app.services.device_traffic_bonus import (
+    rebuild_traffic_with_device_bonus,
+    replace_traffic_package,
+    sync_device_traffic_bonus,
+)
 from app.services.subscription_checkout_service import clear_subscription_checkout_draft
 from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
@@ -994,6 +998,7 @@ async def _auto_purchase_daily_tariff(
             # Обновляем существующую подписку на суточный тариф
             # Суточность определяется через tariff.is_daily, поэтому достаточно установить tariff_id
             was_trial_conversion = existing_subscription.is_trial  # Сохраняем до изменения
+            same_paid_tariff = existing_subscription.tariff_id == tariff.id and not was_trial_conversion
             from app.database.crud.subscription import calc_device_limit_on_tariff_switch
             from app.database.crud.tariff import get_tariff_by_id as _get_old_tariff
 
@@ -1001,13 +1006,26 @@ async def _auto_purchase_daily_tariff(
                 await _get_old_tariff(db, existing_subscription.tariff_id) if existing_subscription.tariff_id else None
             )
             existing_subscription.tariff_id = tariff.id
-            existing_subscription.traffic_limit_gb = tariff.traffic_limit_gb
             existing_subscription.device_limit = calc_device_limit_on_tariff_switch(
                 current_device_limit=existing_subscription.device_limit,
                 old_tariff_device_limit=old_tariff.device_limit if old_tariff else None,
                 new_tariff_device_limit=tariff.device_limit,
                 max_device_limit=getattr(tariff, 'max_device_limit', None),
             )
+            if same_paid_tariff:
+                rebuild_traffic_with_device_bonus(
+                    existing_subscription,
+                    tariff,
+                    tariff.traffic_limit_gb,
+                    preserve_purchased_traffic=True,
+                )
+            else:
+                await replace_traffic_package(
+                    db,
+                    existing_subscription,
+                    tariff,
+                    tariff.traffic_limit_gb,
+                )
             existing_subscription.connected_squads = squads
             existing_subscription.status = 'active'
             existing_subscription.is_trial = False

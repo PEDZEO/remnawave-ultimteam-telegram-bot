@@ -377,7 +377,7 @@ async def create_promocode_endpoint(
         created_by=admin.id,
     )
 
-    update_fields = {}
+    update_fields: dict[str, Any] = {}
     if normalized_valid_from is not None:
         update_fields['valid_from'] = normalized_valid_from
     if payload.is_active is not None and payload.is_active != promocode.is_active:

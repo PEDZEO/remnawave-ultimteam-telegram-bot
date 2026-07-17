@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PERIOD_PRICES, settings
+from app.database.crud.subscription import get_subscription_base_traffic_limit
 from app.database.models import User
 from app.services.metered_traffic_policy import get_customer_squad_uuids
 from app.utils.pricing_utils import (
@@ -348,7 +349,7 @@ async def get_subscription_cost(subscription, db: AsyncSession) -> int:
                 promo_group_id=promo_group_id,
             )
 
-        traffic_cost = settings.get_traffic_price(subscription.traffic_limit_gb)
+        traffic_cost = settings.get_traffic_price(get_subscription_base_traffic_limit(subscription))
         device_limit = subscription.device_limit
         if device_limit is None:
             if settings.is_devices_selection_enabled():

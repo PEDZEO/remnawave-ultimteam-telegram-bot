@@ -28,13 +28,22 @@ async def test_auth_rate_limit_checks_ip_and_identifier(monkeypatch: pytest.Monk
     assert error.value.status_code == 429
     assert limiter.await_count == 2
     assert limiter.await_args_list[0].args[:2] == ('ip:203.0.113.10', 'auth_email_login_ip')
-    assert limiter.await_args_list[1].args[0].startswith('ip:203.0.113.10:id:')
+    assert limiter.await_args_list[1].args[0].startswith('id:')
 
 
 def test_auth_rate_limit_uses_forwarded_ip_from_private_proxy() -> None:
     request = SimpleNamespace(
         client=SimpleNamespace(host='172.18.0.2'),
         headers={'x-forwarded-for': '198.51.100.25, 172.18.0.2'},
+    )
+
+    assert auth_routes._get_auth_client_ip(request) == '198.51.100.25'
+
+
+def test_auth_rate_limit_ignores_spoofed_forwarded_prefix() -> None:
+    request = SimpleNamespace(
+        client=SimpleNamespace(host='172.18.0.2'),
+        headers={'x-forwarded-for': '203.0.113.99, 198.51.100.25, 172.18.0.2'},
     )
 
     assert auth_routes._get_auth_client_ip(request) == '198.51.100.25'

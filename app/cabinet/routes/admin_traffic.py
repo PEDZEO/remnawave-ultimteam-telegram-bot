@@ -316,7 +316,9 @@ async def get_traffic_usage(
 
     # Collect all available statuses (before filtering)
     available_statuses = sorted(
-        {_get_status(sub) for u in user_map.values() if (sub := u.subscription) and _get_status(sub)}
+        status_value
+        for u in user_map.values()
+        if (sub := u.subscription) and (status_value := _get_status(sub)) is not None
     )
 
     # Parse tariff filter

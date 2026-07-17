@@ -1,9 +1,13 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+
+from sqlalchemy.dialects import postgresql
 
 from app.cabinet.routes.admin_tariffs import (
     _apply_tariff_limits_to_subscription,
     _resolve_tariff_apply_device_limit,
     _resolve_tariff_apply_traffic_limit,
+    _tariff_apply_candidate_clause,
 )
 from app.cabinet.schemas.tariffs import TariffApplyLimitsRequest
 
@@ -55,6 +59,18 @@ def test_apply_limits_request_keeps_devices_by_default() -> None:
 
     assert request.update_device_limit is False
     assert request.reset_traffic_usage is False
+
+
+def test_apply_limits_candidate_clause_excludes_trials() -> None:
+    clause = _tariff_apply_candidate_clause(3, datetime(2026, 7, 17, tzinfo=UTC))
+    compiled = str(
+        clause.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={'literal_binds': True},
+        )
+    )
+
+    assert 'subscriptions.is_trial IS false' in compiled
 
 
 def test_apply_limits_persistence_keeps_device_limit_without_flag() -> None:

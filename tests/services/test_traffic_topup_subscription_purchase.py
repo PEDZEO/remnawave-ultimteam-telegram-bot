@@ -23,9 +23,7 @@ class _FakeSession:
         self.flush = AsyncMock()
         self.refresh = AsyncMock()
         self.execute = AsyncMock(return_value=_FakeExecuteResult())
-        self.get = AsyncMock(
-            return_value=SimpleNamespace(device_limit=2, device_traffic_gb=0, is_daily=False)
-        )
+        self.get = AsyncMock(return_value=SimpleNamespace(device_limit=2, device_traffic_gb=0, is_daily=False))
         self.added: list[object] = []
 
     def add(self, obj: object) -> None:

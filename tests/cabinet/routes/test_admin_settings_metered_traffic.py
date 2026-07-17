@@ -185,3 +185,62 @@ async def test_configuration_requires_metered_node_when_enabled(monkeypatch: pyt
 
     assert exc_info.value.status_code == 400
     assert 'хотя бы одну' in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_configuration_restores_coefficients_and_monitor_after_partial_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    squads = [SimpleNamespace(uuid=SQUAD_UUID)]
+    nodes = [
+        SimpleNamespace(uuid=METERED_NODE_UUID, consumption_multiplier=0),
+        SimpleNamespace(uuid=UNLIMITED_NODE_UUID, consumption_multiplier=1),
+    ]
+    update_count = 0
+
+    class FakeApi:
+        async def update_nodes_consumption_multiplier(self, uuids: list[str], multiplier: float) -> bool:
+            nonlocal update_count
+            update_count += 1
+            events.append(f'node:{multiplier:g}:{",".join(uuids)}')
+            return update_count != 2
+
+    class FakeRemnawaveService:
+        def get_api_client(self) -> FakeApiContext:
+            return FakeApiContext(FakeApi())
+
+    class FakeMonitor:
+        async def stop(self) -> None:
+            events.append('stop')
+
+        def is_enabled(self) -> bool:
+            return True
+
+        async def start(self) -> None:
+            events.append('start')
+
+    async def fake_load_topology() -> tuple[list[Any], list[Any]]:
+        return squads, nodes
+
+    monkeypatch.setattr(admin_settings, '_load_metered_topology', fake_load_topology)
+    monkeypatch.setattr(admin_settings, 'remnawave_service', FakeRemnawaveService())
+    monkeypatch.setattr(admin_settings, 'metered_traffic_service', FakeMonitor())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_settings.update_metered_traffic_configuration(
+            _payload(),
+            admin=SimpleNamespace(telegram_id=42),
+            db=FakeDb(events),
+        )
+
+    assert exc_info.value.status_code == 502
+    assert events == [
+        'stop',
+        f'node:1:{METERED_NODE_UUID}',
+        f'node:0:{UNLIMITED_NODE_UUID}',
+        'rollback',
+        f'node:0:{METERED_NODE_UUID}',
+        f'node:1:{UNLIMITED_NODE_UUID}',
+        'start',
+    ]

@@ -51,6 +51,7 @@ from app.external.remnawave_api import (
     UserStatus as RemnaWaveUserStatus,
 )
 from app.localization.texts import get_texts
+from app.services.metered_traffic_policy import panel_traffic_limit_bytes
 from app.services.notification_delivery_service import (
     notification_delivery_service,
 )
@@ -352,7 +353,7 @@ class MonitoringService:
                     uuid=user.remnawave_uuid,
                     status=RemnaWaveUserStatus.ACTIVE if is_active else RemnaWaveUserStatus.DISABLED,
                     expire_at=subscription.end_date,
-                    traffic_limit_bytes=self._gb_to_bytes(subscription.traffic_limit_gb),
+                    traffic_limit_bytes=panel_traffic_limit_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=TrafficLimitStrategy.MONTH,
                     description=settings.format_remnawave_user_description(
                         full_name=user.full_name, username=user.username, telegram_id=user.telegram_id

@@ -5,10 +5,14 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import PERIOD_PRICES, settings
-from app.database.crud.subscription import add_subscription_traffic, reactivate_subscription
+from app.database.crud.subscription import (
+    add_subscription_traffic,
+    get_subscription_base_traffic_limit,
+    reactivate_subscription,
+)
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import subtract_user_balance
-from app.database.models import TransactionType, User
+from app.database.models import Tariff, TransactionType, User
 from app.keyboards.inline import (
     get_add_traffic_keyboard,
     get_add_traffic_keyboard_from_tariff,
@@ -19,6 +23,7 @@ from app.keyboards.inline import (
     get_reset_traffic_confirm_keyboard,
 )
 from app.localization.texts import get_texts
+from app.services.device_traffic_bonus import replace_traffic_package
 from app.services.metered_traffic_policy import tariff_allows_traffic_topup
 from app.services.remnawave_service import RemnaWaveService
 from app.services.subscription_service import SubscriptionService
@@ -177,14 +182,14 @@ def _calculate_traffic_reset_price(subscription) -> int:
 
     if mode == 'traffic':
         # Цена = стоимость текущего пакета трафика
-        traffic_price = settings.get_traffic_price(subscription.traffic_limit_gb)
+        traffic_price = settings.get_traffic_price(get_subscription_base_traffic_limit(subscription))
         return max(traffic_price, base_price)
 
     if mode == 'traffic_with_purchased':
         # Цена = стоимость базового трафика + докупленного
         # Базовый трафик = текущий лимит - докупленный
         purchased_gb = getattr(subscription, 'purchased_traffic_gb', 0) or 0
-        base_traffic_gb = subscription.traffic_limit_gb - purchased_gb
+        base_traffic_gb = get_subscription_base_traffic_limit(subscription)
 
         # Получаем цену базового трафика
         base_traffic_price = settings.get_traffic_price(base_traffic_gb) if base_traffic_gb > 0 else 0
@@ -223,7 +228,7 @@ async def handle_reset_traffic(callback: types.CallbackQuery, db_user: User, db:
     purchased_gb = getattr(subscription, 'purchased_traffic_gb', 0) or 0
     price_info = ''
     if purchased_gb > 0 and settings.get_traffic_reset_price_mode() == 'traffic_with_purchased':
-        base_traffic_gb = subscription.traffic_limit_gb - purchased_gb
+        base_traffic_gb = get_subscription_base_traffic_limit(subscription)
         price_info = (
             f'\n\n💡 <i>Расчет цены:</i>\n'
             f'• Базовый трафик: {texts.format_traffic(base_traffic_gb)}\n'
@@ -568,15 +573,8 @@ async def add_traffic(callback: types.CallbackQuery, db_user: User, db: AsyncSes
             return
 
         if traffic_gb == 0:
-            subscription.traffic_limit_gb = 0
-            # При переходе на безлимит сбрасываем все докупки
-            from sqlalchemy import delete
-
-            from app.database.models import TrafficPurchase
-
-            await db.execute(delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
-            subscription.purchased_traffic_gb = 0
-            subscription.traffic_reset_at = None
+            tariff = await db.get(Tariff, subscription.tariff_id) if subscription.tariff_id else None
+            await replace_traffic_package(db, subscription, tariff, 0)
         else:
             # add_subscription_traffic уже создаёт TrafficPurchase и обновляет все необходимые поля
             await add_subscription_traffic(db, subscription, traffic_gb, commit=False)
@@ -680,7 +678,7 @@ async def handle_switch_traffic(callback: types.CallbackQuery, db_user: User, db
     current_traffic = subscription.traffic_limit_gb
     # Вычисляем базовый трафик (без докупленного) для корректного расчёта цен
     purchased_traffic = getattr(subscription, 'purchased_traffic_gb', 0) or 0
-    base_traffic = current_traffic - purchased_traffic
+    base_traffic = get_subscription_base_traffic_limit(subscription)
 
     period_hint_days = _get_period_hint_from_subscription(subscription)
     traffic_discount_percent = _get_addon_discount_percent_for_user(
@@ -723,10 +721,9 @@ async def confirm_switch_traffic(callback: types.CallbackQuery, db_user: User, d
     current_traffic = subscription.traffic_limit_gb
 
     # Вычисляем базовый трафик (без докупленного) для корректного расчёта цены
-    purchased_traffic = getattr(subscription, 'purchased_traffic_gb', 0) or 0
-    base_traffic = current_traffic - purchased_traffic
+    base_traffic = get_subscription_base_traffic_limit(subscription)
 
-    if new_traffic_gb == current_traffic:
+    if new_traffic_gb == base_traffic:
         await callback.answer('ℹ️ Лимит трафика не изменился', show_alert=True)
         return
 
@@ -838,15 +835,8 @@ async def execute_switch_traffic(callback: types.CallbackQuery, db_user: User, d
                 description=f'Переключение трафика с {current_traffic}GB на {new_traffic_gb}GB на {months_remaining} мес',
             )
 
-        subscription.traffic_limit_gb = new_traffic_gb
-        # Сбрасываем все докупки трафика при переключении пакета
-        from sqlalchemy import delete
-
-        from app.database.models import TrafficPurchase
-
-        await db.execute(delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
-        subscription.purchased_traffic_gb = 0
-        subscription.traffic_reset_at = None  # Сбрасываем дату сброса трафика
+        tariff = await db.get(Tariff, subscription.tariff_id) if subscription.tariff_id else None
+        await replace_traffic_package(db, subscription, tariff, new_traffic_gb)
         subscription.updated_at = datetime.now(UTC)
 
         await db.commit()

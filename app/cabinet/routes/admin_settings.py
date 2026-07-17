@@ -266,6 +266,18 @@ async def _load_metered_topology() -> tuple[list[Any], list[Any]]:
     return squads, nodes
 
 
+async def _restore_node_multipliers(nodes: list[Any]) -> None:
+    groups: dict[float, list[str]] = {}
+    for node in nodes:
+        multiplier = float(node.consumption_multiplier or 0)
+        groups.setdefault(multiplier, []).append(node.uuid)
+
+    async with remnawave_service.get_api_client() as api:
+        for multiplier, node_uuids in groups.items():
+            if node_uuids and not await api.update_nodes_consumption_multiplier(node_uuids, multiplier):
+                raise RuntimeError(f'Remnawave rejected rollback to multiplier {multiplier:g}')
+
+
 def _normalize_uuid_list(values: list[str], *, field_name: str) -> list[str]:
     normalized: list[str] = []
     try:
@@ -577,6 +589,15 @@ async def update_metered_traffic_configuration(
         if node.uuid not in metered_node_set and abs(float(node.consumption_multiplier or 0)) > 0.001
     ]
 
+    changed_node_uuids = set(nodes_to_meter) | set(nodes_to_unlimit)
+    changed_nodes = [node for node in nodes if node.uuid in changed_node_uuids]
+    previous_monitor_enabled = metered_traffic_service.is_enabled()
+    previous_settings = {
+        key: (bot_configuration_service.has_override(key), bot_configuration_service.get_current_value(key))
+        for key in coerced_values
+    }
+    settings_mutated = False
+
     await metered_traffic_service.stop()
     try:
         async with remnawave_service.get_api_client() as api:
@@ -589,9 +610,34 @@ async def update_metered_traffic_configuration(
 
         for key, value in coerced_values.items():
             await bot_configuration_service.set_value(db, key, value)
+            settings_mutated = True
         await db.commit()
     except Exception as error:
         await db.rollback()
+        if changed_nodes:
+            try:
+                await _restore_node_multipliers(changed_nodes)
+            except Exception as rollback_error:
+                logger.error('Failed to restore Remnawave node multipliers', error=rollback_error)
+
+        if settings_mutated:
+            try:
+                for key, (had_override, previous_value) in previous_settings.items():
+                    if had_override:
+                        await bot_configuration_service.set_value(db, key, previous_value)
+                    else:
+                        await bot_configuration_service.reset_value(db, key)
+                await db.commit()
+            except Exception as rollback_error:
+                await db.rollback()
+                logger.error('Failed to restore split traffic settings', error=rollback_error)
+
+        if previous_monitor_enabled:
+            try:
+                await metered_traffic_service.start()
+            except Exception as restart_error:
+                logger.error('Failed to restart split traffic monitor after rollback', error=restart_error)
+
         logger.error(
             'Failed to update split traffic configuration',
             telegram_id=admin.telegram_id,
@@ -662,18 +708,18 @@ async def update_setting(
     except KeyError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Setting not found') from error
 
+    if key.startswith('ULTIMA_METERED_'):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            'Use the split traffic configuration endpoint for metered settings',
+        )
+
     value = _coerce_value(key, payload.value)
     try:
         await bot_configuration_service.set_value(db, key, value)
     except ReadOnlySettingError as error:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     await db.commit()
-
-    if key.startswith('ULTIMA_METERED_'):
-        if metered_traffic_service.is_enabled():
-            await metered_traffic_service.start()
-        else:
-            await metered_traffic_service.stop()
 
     logger.info('Admin updated setting to', telegram_id=admin.telegram_id, key=key, value=value)
     return _serialize_definition(definition)
@@ -691,17 +737,17 @@ async def reset_setting(
     except KeyError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Setting not found') from error
 
+    if key.startswith('ULTIMA_METERED_'):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            'Use the split traffic configuration endpoint for metered settings',
+        )
+
     try:
         await bot_configuration_service.reset_value(db, key)
     except ReadOnlySettingError as error:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(error)) from error
     await db.commit()
-
-    if key.startswith('ULTIMA_METERED_'):
-        if metered_traffic_service.is_enabled():
-            await metered_traffic_service.start()
-        else:
-            await metered_traffic_service.stop()
 
     logger.info('Admin reset setting', telegram_id=admin.telegram_id, key=key)
     return _serialize_definition(definition)

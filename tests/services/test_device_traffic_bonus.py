@@ -1,9 +1,13 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.services.device_traffic_bonus import (
     apply_device_traffic_bonus,
     calculate_device_traffic_bonus,
     rebuild_traffic_with_device_bonus,
+    replace_traffic_package,
 )
 
 
@@ -19,10 +23,12 @@ def _subscription(
     device_bonus: int = 0,
 ):
     return SimpleNamespace(
+        id=1,
         device_limit=devices,
         traffic_limit_gb=total_traffic,
         purchased_traffic_gb=purchased_traffic,
         device_bonus_traffic_gb=device_bonus,
+        traffic_reset_at=None,
     )
 
 
@@ -65,3 +71,22 @@ def test_rebuild_combines_base_purchases_and_device_bonus() -> None:
 
     assert total == 405
     assert subscription.device_bonus_traffic_gb == 350
+
+
+@pytest.mark.asyncio
+async def test_replace_package_discards_topups_and_reapplies_device_bonus() -> None:
+    db = SimpleNamespace(execute=AsyncMock())
+    subscription = _subscription(
+        devices=12,
+        total_traffic=405,
+        purchased_traffic=20,
+        device_bonus=350,
+    )
+
+    total = await replace_traffic_package(db, subscription, _tariff(), 70)
+
+    assert total == 420
+    assert subscription.traffic_limit_gb == 420
+    assert subscription.purchased_traffic_gb == 0
+    assert subscription.device_bonus_traffic_gb == 350
+    db.execute.assert_awaited_once()

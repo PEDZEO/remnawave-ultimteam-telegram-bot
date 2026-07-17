@@ -163,3 +163,25 @@ async def test_bandwidth_warning_respects_user_opt_out() -> None:
     await service._handle_bandwidth_threshold(db, user, None, {'thresholdPercent': 95})
 
     service._notify_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bandwidth_warning_is_ignored_in_split_traffic_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = RemnaWaveWebhookService(bot=SimpleNamespace())
+    service._notify_user = AsyncMock()
+    db = SimpleNamespace(commit=AsyncMock())
+    user = SimpleNamespace(id=7, notification_settings={}, language='ru')
+    subscription = SimpleNamespace(traffic_used_gb=10.0, traffic_limit_gb=35)
+    monkeypatch.setattr(webhook_module, 'is_metered_traffic_enabled', lambda: True)
+
+    await service._handle_bandwidth_threshold(
+        db,
+        user,
+        subscription,
+        {'trafficLimitBytes': 100 * 1024**3, 'usedTrafficBytes': 95 * 1024**3},
+    )
+
+    assert subscription.traffic_used_gb == 10.0
+    assert subscription.traffic_limit_gb == 35
+    db.commit.assert_not_awaited()
+    service._notify_user.assert_not_awaited()

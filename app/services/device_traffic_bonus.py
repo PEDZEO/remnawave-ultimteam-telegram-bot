@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import Subscription, Tariff
+from app.database.models import Subscription, Tariff, TrafficPurchase
 
 
 def calculate_device_traffic_bonus(tariff: Tariff | None, device_limit: int | None) -> int:
@@ -42,14 +43,30 @@ def rebuild_traffic_with_device_bonus(
 ) -> int:
     """Rebuild the effective limit from base, temporary purchases and device bonus."""
     base_traffic = max(0, int(base_traffic_limit_gb or 0))
-    purchased_traffic = (
-        max(0, int(subscription.purchased_traffic_gb or 0)) if preserve_purchased_traffic else 0
-    )
+    purchased_traffic = max(0, int(subscription.purchased_traffic_gb or 0)) if preserve_purchased_traffic else 0
     bonus = calculate_device_traffic_bonus(tariff, subscription.device_limit) if base_traffic > 0 else 0
 
     subscription.device_bonus_traffic_gb = bonus
     subscription.traffic_limit_gb = 0 if base_traffic <= 0 else base_traffic + purchased_traffic + bonus
     return subscription.traffic_limit_gb
+
+
+async def replace_traffic_package(
+    db: AsyncSession,
+    subscription: Subscription,
+    tariff: Tariff | None,
+    base_traffic_limit_gb: int,
+) -> int:
+    """Replace the paid traffic package and discard temporary top-ups atomically."""
+    await db.execute(delete(TrafficPurchase).where(TrafficPurchase.subscription_id == subscription.id))
+    subscription.purchased_traffic_gb = 0
+    subscription.traffic_reset_at = None
+    return rebuild_traffic_with_device_bonus(
+        subscription,
+        tariff,
+        base_traffic_limit_gb,
+        preserve_purchased_traffic=False,
+    )
 
 
 async def sync_device_traffic_bonus(
