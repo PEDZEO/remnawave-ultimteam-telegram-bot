@@ -82,9 +82,7 @@ def test_current_traffic_sql_filters_and_sort_are_database_side() -> None:
     status_condition = _current_traffic_status_condition('current', now)
     order = _current_traffic_order_by('remaining', False, expressions)
 
-    compiled_condition = str(
-        condition.compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True})
-    )
+    compiled_condition = str(condition.compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
     compiled_status = str(
         status_condition.compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True})
     )

@@ -72,9 +72,7 @@ def _current_traffic_expressions(now: datetime) -> dict[str, object]:
     effective_status = case(
         (
             and_(
-                Subscription.status.in_(
-                    (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)
-                ),
+                Subscription.status.in_((SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)),
                 Subscription.end_date <= now,
             ),
             SubscriptionStatus.EXPIRED.value,
@@ -187,9 +185,7 @@ def _serialize_current_traffic_item(
     is_unlimited = limit_gb <= 0
     remaining_gb = None if is_unlimited else max(0.0, limit_gb - used_gb)
     used_percent = None if is_unlimited else min(999.99, (used_gb * 100.0) / limit_gb)
-    is_exhausted = not is_unlimited and (
-        used_gb >= limit_gb or bool(subscription.metered_access_blocked)
-    )
+    is_exhausted = not is_unlimited and (used_gb >= limit_gb or bool(subscription.metered_access_blocked))
 
     return CurrentTrafficItem(
         user_id=user.id,
@@ -511,10 +507,7 @@ async def get_current_traffic(
     tariff_rows = (await db.execute(tariff_stmt)).all()
 
     return CurrentTrafficResponse(
-        items=[
-            _serialize_current_traffic_item(user, subscription, tariff)
-            for user, subscription, tariff in rows
-        ],
+        items=[_serialize_current_traffic_item(user, subscription, tariff) for user, subscription, tariff in rows],
         stats=CurrentTrafficStats(
             total=int(stats_row['total'] or 0),
             limited=int(stats_row['limited'] or 0),

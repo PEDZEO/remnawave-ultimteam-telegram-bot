@@ -63,9 +63,10 @@ def _payload(**overrides: Any) -> MeteredTrafficConfigurationUpdate:
 
 
 def test_multiple_squads_are_normalized_and_legacy_single_value_still_works() -> None:
-    assert _normalize_metered_squad_selection(
-        _payload(squad_uuids=[SQUAD_UUID, SQUAD_UUID_2, SQUAD_UUID])
-    ) == [SQUAD_UUID, SQUAD_UUID_2]
+    assert _normalize_metered_squad_selection(_payload(squad_uuids=[SQUAD_UUID, SQUAD_UUID_2, SQUAD_UUID])) == [
+        SQUAD_UUID,
+        SQUAD_UUID_2,
+    ]
 
     legacy_values = _payload().model_dump(exclude={'squad_uuids'})
     legacy_values['squad_uuid'] = SQUAD_UUID
