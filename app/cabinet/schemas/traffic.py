@@ -1,5 +1,7 @@
 """Schemas for admin traffic usage."""
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -60,3 +62,56 @@ class ExportCsvRequest(BaseModel):
 class ExportCsvResponse(BaseModel):
     success: bool
     message: str
+
+
+class CurrentTrafficTariffOption(BaseModel):
+    id: int
+    name: str
+
+
+class CurrentTrafficItem(BaseModel):
+    user_id: int
+    telegram_id: int | None
+    username: str | None
+    email: str | None
+    full_name: str
+    tariff_id: int | None
+    tariff_name: str | None
+    subscription_status: str
+    is_trial: bool
+    traffic_limit_gb: float
+    traffic_used_gb: float
+    traffic_remaining_gb: float | None
+    traffic_used_percent: float | None
+    is_unlimited: bool
+    is_exhausted: bool
+    metered_access_blocked: bool
+    purchased_traffic_gb: int
+    device_bonus_traffic_gb: int
+    device_limit: int
+    traffic_reset_at: datetime | None
+    last_checked_at: datetime | None
+    end_date: datetime | None
+
+
+class CurrentTrafficStats(BaseModel):
+    total: int
+    limited: int
+    unlimited: int
+    warning: int
+    exhausted: int
+    traffic_used_gb: float
+    traffic_limit_gb: float
+    traffic_remaining_gb: float
+    last_checked_at: datetime | None
+
+
+class CurrentTrafficResponse(BaseModel):
+    items: list[CurrentTrafficItem]
+    stats: CurrentTrafficStats
+    tariffs: list[CurrentTrafficTariffOption]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    warning_percent: int

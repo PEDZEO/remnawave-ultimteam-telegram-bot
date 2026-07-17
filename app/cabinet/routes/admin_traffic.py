@@ -5,6 +5,7 @@ import csv
 import io
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import structlog
 from aiogram import Bot
@@ -12,16 +13,21 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import Float, String, and_, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database.models import Subscription, Transaction, TransactionType, User
+from app.database.models import Subscription, SubscriptionStatus, Tariff, Transaction, TransactionType, User
+from app.services.metered_traffic_policy import get_metered_warning_percent
 from app.services.remnawave_service import RemnaWaveService
 
 from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.traffic import (
+    CurrentTrafficItem,
+    CurrentTrafficResponse,
+    CurrentTrafficStats,
+    CurrentTrafficTariffOption,
     ExportCsvRequest,
     ExportCsvResponse,
     TrafficEnrichmentResponse,
@@ -48,10 +54,167 @@ _cache_lock = asyncio.Lock()
 _SORT_FIELDS = frozenset({'total_bytes', 'full_name', 'tariff_name', 'device_limit', 'traffic_limit_gb'})
 _ENRICHMENT_SORT_FIELDS = frozenset({'connected', 'total_spent', 'sub_start', 'sub_end', 'last_node'})
 
+CurrentTrafficStatus = Literal['all', 'current', 'active', 'trial', 'expired', 'disabled', 'limited']
+CurrentTrafficUsage = Literal['all', 'limited', 'healthy', 'warning', 'exhausted', 'unlimited']
+CurrentTrafficSort = Literal['user', 'tariff', 'status', 'used', 'limit', 'remaining', 'percent', 'end_date']
+
 
 def _get_status(sub) -> str | None:
     """Get subscription status via actual_status property."""
     return sub.actual_status
+
+
+def _current_traffic_expressions(now: datetime) -> dict[str, object]:
+    limit_gb = cast(func.coalesce(Subscription.traffic_limit_gb, 0), Float)
+    used_gb = func.greatest(cast(func.coalesce(Subscription.traffic_used_gb, 0.0), Float), 0.0)
+    remaining_gb = func.greatest(limit_gb - used_gb, 0.0)
+    percent = case((limit_gb > 0, used_gb * 100.0 / func.nullif(limit_gb, 0.0)), else_=None)
+    effective_status = case(
+        (
+            and_(
+                Subscription.status.in_(
+                    (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)
+                ),
+                Subscription.end_date <= now,
+            ),
+            SubscriptionStatus.EXPIRED.value,
+        ),
+        else_=Subscription.status,
+    )
+    exhausted = and_(
+        limit_gb > 0,
+        or_(used_gb >= limit_gb, Subscription.metered_access_blocked.is_(True)),
+    )
+    return {
+        'limit': limit_gb,
+        'used': used_gb,
+        'remaining': remaining_gb,
+        'percent': percent,
+        'status': effective_status,
+        'exhausted': exhausted,
+    }
+
+
+def _current_traffic_status_condition(status_filter: CurrentTrafficStatus, now: datetime):
+    active_statuses = (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIAL.value)
+    if status_filter == 'all':
+        return True
+    if status_filter == 'current':
+        current_statuses = (*active_statuses, SubscriptionStatus.LIMITED.value)
+        return and_(Subscription.status.in_(current_statuses), Subscription.end_date > now)
+    if status_filter == 'expired':
+        return or_(
+            Subscription.status == SubscriptionStatus.EXPIRED.value,
+            and_(Subscription.status.in_(active_statuses), Subscription.end_date <= now),
+        )
+    if status_filter in {'active', 'trial'}:
+        return and_(Subscription.status == status_filter, Subscription.end_date > now)
+    return Subscription.status == status_filter
+
+
+def _current_traffic_usage_condition(
+    usage_filter: CurrentTrafficUsage,
+    expressions: dict[str, object],
+    warning_percent: int,
+):
+    limit_gb = expressions['limit']
+    percent = expressions['percent']
+    exhausted = expressions['exhausted']
+    if usage_filter == 'all':
+        return True
+    if usage_filter == 'unlimited':
+        return limit_gb <= 0
+    if usage_filter == 'limited':
+        return limit_gb > 0
+    if usage_filter == 'exhausted':
+        return exhausted
+    if usage_filter == 'warning':
+        return and_(limit_gb > 0, percent >= warning_percent, ~exhausted)
+    return and_(limit_gb > 0, percent < warning_percent, ~exhausted)
+
+
+def _current_traffic_search_condition(search: str):
+    normalized = search.strip()
+    if not normalized:
+        return True
+    escaped = normalized.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    pattern = f'%{escaped}%'
+    return or_(
+        User.username.ilike(pattern, escape='\\'),
+        User.email.ilike(pattern, escape='\\'),
+        User.first_name.ilike(pattern, escape='\\'),
+        User.last_name.ilike(pattern, escape='\\'),
+        cast(User.telegram_id, String).ilike(pattern, escape='\\'),
+    )
+
+
+def _current_traffic_order_by(
+    sort_by: CurrentTrafficSort,
+    sort_desc: bool,
+    expressions: dict[str, object],
+):
+    full_name = func.lower(
+        func.concat_ws(
+            ' ',
+            func.coalesce(User.first_name, ''),
+            func.coalesce(User.last_name, ''),
+        )
+    )
+    sort_expression = {
+        'user': full_name,
+        'tariff': func.lower(func.coalesce(Tariff.name, '')),
+        'status': expressions['status'],
+        'used': expressions['used'],
+        'limit': expressions['limit'],
+        'remaining': case(
+            (expressions['limit'] > 0, expressions['remaining']),
+            else_=None,
+        ),
+        'percent': expressions['percent'],
+        'end_date': Subscription.end_date,
+    }[sort_by]
+    ordered = sort_expression.desc() if sort_desc else sort_expression.asc()
+    return ordered.nullslast()
+
+
+def _serialize_current_traffic_item(
+    user: User,
+    subscription: Subscription,
+    tariff: Tariff | None,
+) -> CurrentTrafficItem:
+    limit_gb = max(0.0, float(subscription.traffic_limit_gb or 0))
+    used_gb = max(0.0, float(subscription.traffic_used_gb or 0.0))
+    is_unlimited = limit_gb <= 0
+    remaining_gb = None if is_unlimited else max(0.0, limit_gb - used_gb)
+    used_percent = None if is_unlimited else min(999.99, (used_gb * 100.0) / limit_gb)
+    is_exhausted = not is_unlimited and (
+        used_gb >= limit_gb or bool(subscription.metered_access_blocked)
+    )
+
+    return CurrentTrafficItem(
+        user_id=user.id,
+        telegram_id=user.telegram_id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        tariff_id=tariff.id if tariff else subscription.tariff_id,
+        tariff_name=tariff.name if tariff else None,
+        subscription_status=subscription.actual_status,
+        is_trial=bool(subscription.is_trial or subscription.actual_status == 'trial'),
+        traffic_limit_gb=round(limit_gb, 3),
+        traffic_used_gb=round(used_gb, 3),
+        traffic_remaining_gb=round(remaining_gb, 3) if remaining_gb is not None else None,
+        traffic_used_percent=round(used_percent, 2) if used_percent is not None else None,
+        is_unlimited=is_unlimited,
+        is_exhausted=is_exhausted,
+        metered_access_blocked=bool(subscription.metered_access_blocked),
+        purchased_traffic_gb=max(0, int(subscription.purchased_traffic_gb or 0)),
+        device_bonus_traffic_gb=max(0, int(subscription.device_bonus_traffic_gb or 0)),
+        device_limit=max(0, int(subscription.device_limit or 0)),
+        traffic_reset_at=subscription.traffic_reset_at,
+        last_checked_at=subscription.metered_traffic_last_checked_at or user.last_remnawave_sync,
+        end_date=subscription.end_date,
+    )
 
 
 def _validate_period(period: int) -> None:
@@ -258,6 +421,118 @@ def _build_traffic_items(
         items.sort(key=lambda x: getattr(x, sort_by, 0) or 0, reverse=sort_desc)
 
     return items
+
+
+@router.get('/current', response_model=CurrentTrafficResponse)
+async def get_current_traffic(
+    admin: User = Depends(require_permission('traffic:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=10, le=100),
+    search: str = Query('', max_length=100),
+    tariff_id: int | None = Query(None, ge=1),
+    status_filter: CurrentTrafficStatus = Query('current', alias='status'),
+    usage: CurrentTrafficUsage = Query('all'),
+    sort_by: CurrentTrafficSort = Query('remaining'),
+    sort_desc: bool = Query(False),
+):
+    """Return current subscription traffic using SQL pagination and aggregates."""
+    del admin
+    now = datetime.now(UTC)
+    warning_percent = get_metered_warning_percent()
+    expressions = _current_traffic_expressions(now)
+
+    base_conditions = [
+        _current_traffic_status_condition(status_filter, now),
+        _current_traffic_search_condition(search),
+    ]
+    if tariff_id is not None:
+        base_conditions.append(Subscription.tariff_id == tariff_id)
+
+    usage_condition = _current_traffic_usage_condition(usage, expressions, warning_percent)
+    item_conditions = [*base_conditions, usage_condition]
+
+    warning_condition = and_(
+        expressions['limit'] > 0,
+        expressions['percent'] >= warning_percent,
+        ~expressions['exhausted'],
+    )
+    stats_stmt = (
+        select(
+            func.count(Subscription.id).label('total'),
+            func.count(Subscription.id).filter(expressions['limit'] > 0).label('limited'),
+            func.count(Subscription.id).filter(expressions['limit'] <= 0).label('unlimited'),
+            func.count(Subscription.id).filter(warning_condition).label('warning'),
+            func.count(Subscription.id).filter(expressions['exhausted']).label('exhausted'),
+            func.coalesce(func.sum(expressions['used']), 0.0).label('traffic_used_gb'),
+            func.coalesce(func.sum(expressions['limit']), 0.0).label('traffic_limit_gb'),
+            func.coalesce(
+                func.sum(case((expressions['limit'] > 0, expressions['remaining']), else_=0.0)),
+                0.0,
+            ).label('traffic_remaining_gb'),
+            func.max(Subscription.metered_traffic_last_checked_at).label('last_checked_at'),
+        )
+        .select_from(Subscription)
+        .join(User, User.id == Subscription.user_id)
+        .outerjoin(Tariff, Tariff.id == Subscription.tariff_id)
+        .where(*base_conditions)
+    )
+    stats_row = (await db.execute(stats_stmt)).mappings().one()
+
+    count_stmt = (
+        select(func.count(Subscription.id))
+        .select_from(Subscription)
+        .join(User, User.id == Subscription.user_id)
+        .where(*item_conditions)
+    )
+    total = int((await db.scalar(count_stmt)) or 0)
+
+    offset = (page - 1) * page_size
+    items_stmt = (
+        select(User, Subscription, Tariff)
+        .join(Subscription, Subscription.user_id == User.id)
+        .outerjoin(Tariff, Tariff.id == Subscription.tariff_id)
+        .where(*item_conditions)
+        .order_by(
+            _current_traffic_order_by(sort_by, sort_desc, expressions),
+            Subscription.id.desc(),
+        )
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = (await db.execute(items_stmt)).all()
+
+    tariff_stmt = (
+        select(Tariff.id, Tariff.name)
+        .join(Subscription, Subscription.tariff_id == Tariff.id)
+        .distinct()
+        .order_by(Tariff.name.asc(), Tariff.id.asc())
+    )
+    tariff_rows = (await db.execute(tariff_stmt)).all()
+
+    return CurrentTrafficResponse(
+        items=[
+            _serialize_current_traffic_item(user, subscription, tariff)
+            for user, subscription, tariff in rows
+        ],
+        stats=CurrentTrafficStats(
+            total=int(stats_row['total'] or 0),
+            limited=int(stats_row['limited'] or 0),
+            unlimited=int(stats_row['unlimited'] or 0),
+            warning=int(stats_row['warning'] or 0),
+            exhausted=int(stats_row['exhausted'] or 0),
+            traffic_used_gb=round(float(stats_row['traffic_used_gb'] or 0.0), 3),
+            traffic_limit_gb=round(float(stats_row['traffic_limit_gb'] or 0.0), 3),
+            traffic_remaining_gb=round(float(stats_row['traffic_remaining_gb'] or 0.0), 3),
+            last_checked_at=stats_row['last_checked_at'],
+        ),
+        tariffs=[CurrentTrafficTariffOption(id=row.id, name=row.name) for row in tariff_rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=max(1, (total + page_size - 1) // page_size),
+        warning_percent=warning_percent,
+    )
 
 
 @router.get('', response_model=TrafficUsageResponse)
