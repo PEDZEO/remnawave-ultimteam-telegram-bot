@@ -36,6 +36,7 @@ from app.services.metered_traffic_policy import (
     build_subscription_squads,
     disable_metered_access,
     get_metered_squad_uuid,
+    panel_traffic_limit_bytes,
     reset_metered_cycle,
 )
 
@@ -66,12 +67,6 @@ router = APIRouter(prefix='/admin/tariffs', tags=['Cabinet Admin Tariffs'])
 
 _APPLY_LIMITS_CONCURRENCY = 5
 _APPLY_LIMITS_MAX_CONSECUTIVE_FAILURES = 10
-
-
-def _gb_to_bytes(gb: int | None) -> int:
-    if not gb:
-        return 0
-    return int(gb) * 1024 * 1024 * 1024
 
 
 def _resolve_tariff_apply_traffic_limit(
@@ -810,7 +805,7 @@ async def apply_tariff_limits_to_active_subscriptions(
                             uuid=remnawave_uuid,
                             status=RemnaWaveUserStatus.ACTIVE,
                             expire_at=sub.end_date,
-                            traffic_limit_bytes=_gb_to_bytes(target_traffic_limit),
+                            traffic_limit_bytes=panel_traffic_limit_bytes(target_traffic_limit),
                             traffic_limit_strategy=traffic_strategy,
                             hwid_device_limit=hwid_limit,
                         )
