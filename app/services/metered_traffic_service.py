@@ -144,6 +144,12 @@ class MeteredTrafficService:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
+            except RemnaWaveAPIError as error:
+                self._last_error = str(error)
+                # The API client logs the root transport/HTTP failure once. The monitor
+                # retries on the next interval, so reporting the wrapper as another
+                # ERROR only produces duplicate administrator notifications.
+                logger.warning('Metered traffic monitor iteration deferred', error=error)
             except Exception as error:
                 self._last_error = str(error)
                 logger.error('Metered traffic monitor iteration failed', error=error, exc_info=True)
@@ -246,11 +252,28 @@ class MeteredTrafficService:
         if missing:
             errors.append(f'Не найдены ноды: {", ".join(sorted(missing))}')
 
+        corrections: dict[float, list[str]] = {}
+        correction_names: dict[float, list[str]] = {}
         for node in nodes:
             multiplier = float(node.consumption_multiplier or 0)
             expected = configured.get(node.uuid, 0.0)
             if abs(multiplier - expected) > 0.001:
-                errors.append(f'Нода {node.name}: коэффициент {multiplier:g}, требуется {expected:g}')
+                corrections.setdefault(expected, []).append(node.uuid)
+                correction_names.setdefault(expected, []).append(node.name)
+
+        for expected, node_uuids in corrections.items():
+            updated = await api.update_nodes_consumption_multiplier(node_uuids, expected)
+            if not updated:
+                errors.append(
+                    f'Не удалось установить коэффициент {expected:g} для нод: {", ".join(correction_names[expected])}'
+                )
+                continue
+            logger.info(
+                'Metered traffic node multipliers reconciled',
+                node_uuids=node_uuids,
+                node_names=correction_names[expected],
+                multiplier=expected,
+            )
 
         return errors
 

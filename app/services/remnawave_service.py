@@ -782,7 +782,7 @@ class RemnaWaveService:
                 return result
 
         except Exception as e:
-            logger.error('Ошибка получения нод из Remnawave', error=e)
+            logger.warning('Не удалось получить ноды из Remnawave; повторим позже', error=e)
             return []
 
     async def test_connection(self) -> bool:

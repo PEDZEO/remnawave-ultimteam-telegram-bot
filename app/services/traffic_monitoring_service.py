@@ -294,7 +294,7 @@ class TrafficMonitoringServiceV2:
             return all_users
 
         except Exception as e:
-            logger.error('❌ Ошибка при получении пользователей', error=e)
+            logger.warning('Не удалось получить пользователей из Remnawave; повторим позже', error=e)
             return []
 
     # ============== Быстрая проверка ==============

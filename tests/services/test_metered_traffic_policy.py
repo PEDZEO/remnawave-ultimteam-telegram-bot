@@ -238,7 +238,7 @@ async def test_topology_validation_accepts_configured_multiplier_for_metered_nod
 
 
 @pytest.mark.asyncio
-async def test_topology_validation_reports_unsafe_multipliers(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_topology_validation_reconciles_unsafe_multipliers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         settings,
         'ULTIMA_METERED_NODE_MULTIPLIERS',
@@ -246,6 +246,9 @@ async def test_topology_validation_reports_unsafe_multipliers(monkeypatch: pytes
     )
 
     class FakeApi:
+        def __init__(self) -> None:
+            self.updates: list[tuple[list[str], float]] = []
+
         async def get_all_nodes(self):
             return [
                 SimpleNamespace(
@@ -260,8 +263,43 @@ async def test_topology_validation_reports_unsafe_multipliers(monkeypatch: pytes
                 ),
             ]
 
+        async def update_nodes_consumption_multiplier(self, uuids: list[str], multiplier: float) -> bool:
+            self.updates.append((uuids, multiplier))
+            return True
+
+    api = FakeApi()
+
+    errors = await MeteredTrafficService._validate_node_multipliers(api)
+
+    assert errors == []
+    assert api.updates == [
+        (['33333333-3333-3333-3333-333333333333'], 2),
+        (['44444444-4444-4444-4444-444444444444'], 0.0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_topology_validation_reports_failed_automatic_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_UUIDS', '')
+    monkeypatch.setattr(settings, 'ULTIMA_METERED_NODE_MULTIPLIERS', '{}')
+
+    class FakeApi:
+        async def get_all_nodes(self):
+            return [
+                SimpleNamespace(
+                    uuid='55555555-5555-5555-5555-555555555555',
+                    name='New node',
+                    consumption_multiplier=1,
+                ),
+            ]
+
+        async def update_nodes_consumption_multiplier(self, uuids: list[str], multiplier: float) -> bool:
+            assert uuids == ['55555555-5555-5555-5555-555555555555']
+            assert multiplier == 0.0
+            return False
+
     errors = await MeteredTrafficService._validate_node_multipliers(FakeApi())
 
-    assert len(errors) == 2
-    assert any('Metered' in error and 'требуется 2' in error for error in errors)
-    assert any('Unlimited' in error and 'требуется 0' in error for error in errors)
+    assert errors == ['Не удалось установить коэффициент 0 для нод: New node']
