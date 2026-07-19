@@ -10,8 +10,6 @@ from urllib.parse import urlparse
 
 import aiohttp
 import structlog
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 
 from app.services.metered_traffic_policy import is_metered_traffic_enabled
 
@@ -19,24 +17,8 @@ from app.services.metered_traffic_policy import is_metered_traffic_enabled
 logger = structlog.get_logger(__name__)
 
 
-_HAPP_CRYPTO_V4_DEEP_LINK = 'happ://crypt4/'
-_HAPP_CRYPTO_V4_PUBLIC_KEY = b"""
------BEGIN PUBLIC KEY-----
-MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3UZ0M3L4K+WjM3vkbQnz
-ozHg/cRbEXvQ6i4A8RVN4OM3rK9kU01FdjyoIgywve8OEKsFnVwERZAQZ1Trv60B
-hmaM76QQEE+EUlIOL9EpwKWGtTL5lYC1sT9XJMNP3/CI0gP5wwQI88cY/xedpOEB
-W72EmOOShHUm/b/3m+HPmqwc4ugKj5zWV5SyiT829aFA5DxSjmIIFBAms7DafmSq
-LFTYIQL5cShDY2u+/sqyAw9yZIOoqW2TFIgIHhLPWek/ocDU7zyOrlu1E0SmcQQb
-LFqHq02fsnH6IcqTv3N5Adb/CkZDDQ6HvQVBmqbKZKf7ZdXkqsc/Zw27xhG7OfXC
-tUmWsiL7zA+KoTd3avyOh93Q9ju4UQsHthL3Gs4vECYOCS9dsXXSHEY/1ngU/hjO
-WFF8QEE/rYV6nA4PTyUvo5RsctSQL/9DJX7XNh3zngvif8LsCN2MPvx6X+zLouBX
-zgBkQ9DFfZAGLWf9TR7KVjZC/3NsuUCDoAOcpmN8pENBbeB0puiKMMWSvll36+2M
-YR1Xs0MgT8Y9TwhE2+TnnTJOhzmHi/BxiUlY/w2E0s4ax9GHAmX0wyF4zeV7kDkc
-vHuEdc0d7vDmdw0oqCqWj0Xwq86HfORu6tm1A8uRATjb4SzjTKclKuoElVAVa5Jo
-oh/uZMozC65SmDw+N5p6Su8CAwEAAQ==
------END PUBLIC KEY-----
-"""
-_HAPP_CRYPTO_V4_PUBLIC_KEY_OBJ = serialization.load_pem_public_key(_HAPP_CRYPTO_V4_PUBLIC_KEY)
+_HAPP_CRYPTO_V5_DEEP_LINK = 'happ://crypt5/'
+_HAPP_CRYPTO_V5_ENDPOINT = 'https://crypto.happ.su/api-v2.php'
 
 
 class UserStatus(Enum):
@@ -266,19 +248,6 @@ def _int_from_api_number(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
-
-
-def _create_happ_crypto_link(content: str) -> str | None:
-    try:
-        encrypted = _HAPP_CRYPTO_V4_PUBLIC_KEY_OBJ.encrypt(
-            content.encode('utf-8'),
-            padding.PKCS1v15(),
-        )
-    except Exception as exc:
-        logger.debug('Could not create Happ crypto link locally', error=exc)
-        return None
-
-    return _HAPP_CRYPTO_V4_DEEP_LINK + base64.b64encode(encrypted).decode('ascii')
 
 
 class RemnaWaveAPI:
@@ -574,13 +543,13 @@ class RemnaWaveAPI:
             uuid=user.uuid,
             response_hwidDeviceLimit=user.hwid_device_limit,
         )
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def get_user_by_uuid(self, uuid: str) -> RemnaWaveUser | None:
         try:
             response = await self._make_request('GET', f'/api/users/{uuid}', quiet_statuses=(404,))
             user = self._parse_user(response['response'])
-            return await self.enrich_user_with_happ_link(user)
+            return user
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return None
@@ -593,7 +562,7 @@ class RemnaWaveAPI:
             if not users_data:
                 return []
             users = [self._parse_user(user) for user in users_data]
-            return [await self.enrich_user_with_happ_link(u) for u in users]
+            return users
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return []
@@ -603,7 +572,7 @@ class RemnaWaveAPI:
         try:
             response = await self._make_request('GET', f'/api/users/by-id/{user_id}')
             user = self._parse_user(response['response'])
-            return await self.enrich_user_with_happ_link(user)
+            return user
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return None
@@ -613,7 +582,7 @@ class RemnaWaveAPI:
         try:
             response = await self._make_request('GET', f'/api/users/by-username/{username}')
             user = self._parse_user(response['response'])
-            return await self.enrich_user_with_happ_link(user)
+            return user
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return None
@@ -630,7 +599,7 @@ class RemnaWaveAPI:
             if isinstance(users_data, dict):
                 users_data = [users_data]
             users = [self._parse_user(user) for user in users_data]
-            return [await self.enrich_user_with_happ_link(u) for u in users]
+            return users
         except RemnaWaveAPIError as e:
             if e.status_code == 404:
                 return []
@@ -692,7 +661,7 @@ class RemnaWaveAPI:
             uuid=uuid,
             response_hwidDeviceLimit=user.hwid_device_limit,
         )
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def delete_user(self, uuid: str) -> bool:
         response = await self._make_request('DELETE', f'/api/users/{uuid}')
@@ -701,17 +670,17 @@ class RemnaWaveAPI:
     async def enable_user(self, uuid: str) -> RemnaWaveUser:
         response = await self._make_request('POST', f'/api/users/{uuid}/actions/enable')
         user = self._parse_user(response['response'])
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def disable_user(self, uuid: str) -> RemnaWaveUser:
         response = await self._make_request('POST', f'/api/users/{uuid}/actions/disable')
         user = self._parse_user(response['response'])
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def reset_user_traffic(self, uuid: str) -> RemnaWaveUser:
         response = await self._make_request('POST', f'/api/users/{uuid}/actions/reset-traffic')
         user = self._parse_user(response['response'])
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def revoke_user_subscription(
         self, uuid: str, new_short_uuid: str | None = None, revoke_only_passwords: bool = False
@@ -732,7 +701,7 @@ class RemnaWaveAPI:
 
         response = await self._make_request('POST', f'/api/users/{uuid}/actions/revoke', data)
         user = self._parse_user(response['response'])
-        return await self.enrich_user_with_happ_link(user)
+        return user
 
     async def get_user_accessible_nodes(self, uuid: str) -> list[RemnaWaveAccessibleNode]:
         """Получает список доступных нод для пользователя"""
@@ -767,8 +736,8 @@ class RemnaWaveAPI:
 
         users = [self._parse_user(user) for user in response['response']['users']]
 
-        if enrich_happ_links:
-            users = [await self.enrich_user_with_happ_link(u) for u in users]
+        # The panel-provided link is returned as-is. crypt5 generation performs
+        # an external request and is intentionally limited to explicit connect data.
 
         return {'users': users, 'total': response['response']['total']}
 
@@ -1332,22 +1301,33 @@ class RemnaWaveAPI:
     async def encrypt_happ_crypto_link(self, link_to_encrypt: str) -> str | None:
         if not link_to_encrypt:
             return None
-        if link_to_encrypt.startswith(_HAPP_CRYPTO_V4_DEEP_LINK):
+        if link_to_encrypt.startswith(_HAPP_CRYPTO_V5_DEEP_LINK):
             return link_to_encrypt
 
-        encrypted = _create_happ_crypto_link(link_to_encrypt)
-        if encrypted:
+        timeout = aiohttp.ClientTimeout(total=12)
+        try:
+            # A separate session is intentional: panel API credentials must
+            # never be forwarded to the external Happ crypto service.
+            async with aiohttp.ClientSession(timeout=timeout) as crypto_session:
+                async with crypto_session.post(
+                    _HAPP_CRYPTO_V5_ENDPOINT,
+                    json={'url': link_to_encrypt},
+                    headers={'Accept': 'application/json'},
+                ) as response:
+                    if response.status >= 400:
+                        logger.warning('Happ crypt5 service returned an error', status=response.status)
+                        return None
+                    payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            logger.warning('Could not create Happ crypt5 link', error=type(exc).__name__)
+            return None
+
+        encrypted = payload.get('encrypted_link') if isinstance(payload, dict) else None
+        if isinstance(encrypted, str) and encrypted.startswith(_HAPP_CRYPTO_V5_DEEP_LINK):
             return encrypted
 
-        logger.warning('Could not create Happ crypto link locally')
+        logger.warning('Happ crypt5 service returned an invalid payload')
         return None
-
-    async def enrich_user_with_happ_link(self, user: RemnaWaveUser) -> RemnaWaveUser:
-        if not user.happ_crypto_link and user.subscription_url:
-            encrypted = await self.encrypt_happ_crypto_link(user.subscription_url)
-            if encrypted:
-                user.happ_crypto_link = encrypted
-        return user
 
     def _parse_user_traffic(self, traffic_data: dict | None) -> UserTraffic | None:
         """Парсит данные трафика из нового формата API"""

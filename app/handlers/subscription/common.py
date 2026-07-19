@@ -464,6 +464,7 @@ def resolve_button_url(
     if crypto_link:
         result = result.replace('{{HAPP_CRYPT3_LINK}}', crypto_link)
         result = result.replace('{{HAPP_CRYPT4_LINK}}', crypto_link)
+        result = result.replace('{{HAPP_CRYPT5_LINK}}', crypto_link)
     return result
 
 

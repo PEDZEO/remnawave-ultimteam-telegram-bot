@@ -1,6 +1,5 @@
-import base64
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -30,19 +29,49 @@ async def test_get_user_by_uuid_treats_not_found_as_expected(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_happ_crypto_link_is_generated_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_happ_crypto_link_uses_v5_service_without_panel_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     api = RemnaWaveAPI('https://panel.example', 'token')
+    calls: list[dict[str, Any]] = []
 
-    async def fail_make_request(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise AssertionError('Remnawave Happ encrypt endpoint must not be called')
+    class FakeResponse:
+        status = 200
 
-    monkeypatch.setattr(api, '_make_request', fail_make_request)
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def json(self, **_kwargs: Any) -> dict[str, str]:
+            return {'encrypted_link': 'happ://crypt5/generated'}
+
+    class FakeSession:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        def post(self, url: str, **kwargs: Any) -> FakeResponse:
+            calls.append({'url': url, **kwargs})
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        'app.external.remnawave_api.aiohttp.ClientSession',
+        lambda **_kwargs: FakeSession(),
+    )
 
     link = await api.encrypt_happ_crypto_link('https://sub.example/api/sub/abc')
 
-    assert link is not None
-    assert link.startswith('happ://crypt4/')
-    base64.b64decode(link.removeprefix('happ://crypt4/'), validate=True)
+    assert link == 'happ://crypt5/generated'
+    assert calls == [
+        {
+            'url': 'https://crypto.happ.su/api-v2.php',
+            'json': {'url': 'https://sub.example/api/sub/abc'},
+            'headers': {'Accept': 'application/json'},
+        }
+    ]
+    assert all('Authorization' not in call.get('headers', {}) for call in calls)
 
 
 @pytest.mark.asyncio

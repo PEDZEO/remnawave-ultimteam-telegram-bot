@@ -1,10 +1,13 @@
 """Helper functions for subscription app-config/deep-link rendering."""
 
 import base64
+import json
+import os
 import re
 from typing import Any
 
 import structlog
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.config import settings
 from app.services.remnawave_service import RemnaWaveService
@@ -12,6 +15,54 @@ from app.services.system_settings_service import bot_configuration_service
 
 
 logger = structlog.get_logger(__name__)
+
+_INCY_CRYPT1_PREFIX = 'incy://crypt1/'
+_HAPP_CRYPT5_PREFIX = 'happ://crypt5/'
+# Public compatibility key from @incy/link-encoder. crypt1 is obfuscation,
+# not secret storage; INCY clients ship the same key.
+_INCY_CRYPT1_KEY = bytes.fromhex('f6d40ea0c8a8899d7c682d09ba0d4165dfe2b3dd45e6bb3e25cb233cf00c2462')
+
+
+def _is_app(app: dict[str, Any], app_id: str) -> bool:
+    identity = ' '.join(str(app.get(field, '')).strip().lower() for field in ('id', 'name', 'urlScheme'))
+    return app_id in identity
+
+
+def _select_synced_happ_link(
+    current_link: str | None,
+    panel_link: str | None,
+    *,
+    subscription_url_changed: bool,
+) -> str | None:
+    """Keep a local crypt5 link unless the source subscription URL changed."""
+    if str(panel_link or '').startswith(_HAPP_CRYPT5_PREFIX):
+        return panel_link
+    if subscription_url_changed:
+        return panel_link
+    if str(current_link or '').startswith(_HAPP_CRYPT5_PREFIX):
+        return current_link
+    return panel_link or current_link
+
+
+def _create_incy_crypto_link(subscription_url: str | None, provider_name: str | None = None) -> str | None:
+    """Build the public INCY crypt1 wire format without an external request."""
+    if not subscription_url or not subscription_url.lower().startswith(('http://', 'https://')):
+        return None
+
+    payload: dict[str, Any] = {'url': subscription_url, 'v': 1}
+    if provider_name:
+        payload['n'] = provider_name[:128]
+
+    plaintext = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(',', ':'),
+        sort_keys=True,
+    ).encode('utf-8')
+    iv = os.urandom(12)
+    encrypted = AESGCM(_INCY_CRYPT1_KEY).encrypt(iv, plaintext, None)
+    encoded = base64.urlsafe_b64encode(iv + encrypted).decode('ascii').rstrip('=')
+    return f'{_INCY_CRYPT1_PREFIX}{encoded}'
 
 
 def _get_remnawave_config_uuid() -> str | None:
@@ -27,7 +78,7 @@ def _extract_scheme_from_buttons(buttons: list[dict[str, Any]]) -> tuple[str, bo
 
     Returns:
         Tuple of (scheme, uses_crypto_link).
-        uses_crypto_link=True when the template is {{HAPP_CRYPT4_LINK}},
+        uses_crypto_link=True when the template is a Happ crypto link,
         meaning subscription_crypto_link should be used as payload.
     """
     for btn in buttons:
@@ -38,8 +89,8 @@ def _extract_scheme_from_buttons(buttons: list[dict[str, Any]]) -> tuple[str, bo
             continue
         link_upper = link.upper()
 
-        if '{{HAPP_CRYPT4_LINK}}' in link_upper or 'HAPP_CRYPT4_LINK' in link_upper:
-            scheme = re.sub(r'\{\{HAPP_CRYPT4_LINK\}\}', '', link, flags=re.IGNORECASE)
+        if re.search(r'HAPP_CRYPT[345]_LINK', link_upper):
+            scheme = re.sub(r'\{\{HAPP_CRYPT[345]_LINK\}\}', '', link, flags=re.IGNORECASE)
             if scheme and '://' in scheme:
                 return scheme, True
 
@@ -109,14 +160,23 @@ async def _load_app_config_async() -> dict[str, Any] | None:
 
 
 def _create_deep_link(
-    app: dict[str, Any], subscription_url: str | None, subscription_crypto_link: str | None = None
+    app: dict[str, Any],
+    subscription_url: str | None,
+    subscription_crypto_link: str | None = None,
+    subscription_incy_crypto_link: str | None = None,
 ) -> str | None:
     """Create deep link for app with subscription URL."""
     if not isinstance(app, dict):
         return None
 
-    if not subscription_url and not subscription_crypto_link:
+    if not subscription_url and not subscription_crypto_link and not subscription_incy_crypto_link:
         return None
+
+    if _is_app(app, 'incy') and subscription_incy_crypto_link:
+        return subscription_incy_crypto_link
+
+    if _is_app(app, 'happ') and subscription_crypto_link:
+        return subscription_crypto_link
 
     scheme, uses_crypto = _get_url_scheme_for_app(app)
     if not scheme:
@@ -144,13 +204,15 @@ def _create_deep_link(
         except Exception as e:
             logger.warning('Failed to encode payload to base64', error=e)
 
-    return f'{scheme}{payload}'
+    scheme_prefix = scheme if '://' in scheme else f'{scheme}://'
+    return f'{scheme_prefix}{payload}'
 
 
 def _resolve_button_url(
     url: str,
     subscription_url: str | None,
     subscription_crypto_link: str | None,
+    subscription_incy_crypto_link: str | None = None,
 ) -> str:
     """Resolve template variables in button URLs."""
     if not url:
@@ -161,4 +223,7 @@ def _resolve_button_url(
     if subscription_crypto_link:
         result = result.replace('{{HAPP_CRYPT3_LINK}}', subscription_crypto_link)
         result = result.replace('{{HAPP_CRYPT4_LINK}}', subscription_crypto_link)
+        result = result.replace('{{HAPP_CRYPT5_LINK}}', subscription_crypto_link)
+    if subscription_incy_crypto_link:
+        result = result.replace('{{INCY_CRYPT1_LINK}}', subscription_incy_crypto_link)
     return result

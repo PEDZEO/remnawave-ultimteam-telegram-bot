@@ -70,8 +70,11 @@ from ..schemas.subscription import (
 )
 from .subscription_app_config_helpers import (
     _create_deep_link,
+    _create_incy_crypto_link,
+    _is_app,
     _load_app_config_async,
     _resolve_button_url,
+    _select_synced_happ_link,
 )
 from .subscription_helpers import (
     apply_addon_discount as _apply_addon_discount,
@@ -106,13 +109,21 @@ async def _refresh_subscription_link_from_panel(db: AsyncSession, user: User) ->
             user.subscription.remnawave_short_uuid = panel_user.short_uuid
             changed = True
 
-        if panel_user.subscription_url and user.subscription.subscription_url != panel_user.subscription_url:
+        subscription_url_changed = bool(
+            panel_user.subscription_url and user.subscription.subscription_url != panel_user.subscription_url
+        )
+        if subscription_url_changed:
             user.subscription.subscription_url = panel_user.subscription_url
             changed = True
 
         panel_crypto_link = panel_user.happ_crypto_link
-        if panel_crypto_link and user.subscription.subscription_crypto_link != panel_crypto_link:
-            user.subscription.subscription_crypto_link = panel_crypto_link
+        synced_crypto_link = _select_synced_happ_link(
+            user.subscription.subscription_crypto_link,
+            panel_crypto_link,
+            subscription_url_changed=subscription_url_changed,
+        )
+        if user.subscription.subscription_crypto_link != synced_crypto_link:
+            user.subscription.subscription_crypto_link = synced_crypto_link
             changed = True
 
         if panel_user.expire_at:
@@ -3029,9 +3040,9 @@ async def get_app_config(
         subscription_url = user.subscription.subscription_url
         subscription_crypto_link = user.subscription.subscription_crypto_link
 
-    # Generate crypto link on the fly if subscription_url exists but crypto link is missing.
-    # This covers synced users where enrich_happ_links was not called.
-    if subscription_url and not subscription_crypto_link:
+    # Keep stored links on the current Happ crypt5 format. This also upgrades
+    # users synced before crypt5 was introduced.
+    if subscription_url and not str(subscription_crypto_link or '').startswith('happ://crypt5/'):
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
@@ -3055,6 +3066,10 @@ async def get_app_config(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='App configuration not set up.',
         )
+
+    branding_settings = config.get('brandingSettings', {})
+    provider_name = branding_settings.get('name') if isinstance(branding_settings, dict) else None
+    subscription_incy_crypto_link = _create_incy_crypto_link(subscription_url, provider_name)
 
     config.pop('_isRemnawave', None)
     hide_link = settings.should_hide_subscription_link()
@@ -3094,7 +3109,12 @@ async def get_app_config(
             # Generate deep link
             deep_link = None
             if subscription_url or subscription_crypto_link:
-                deep_link = _create_deep_link(app, subscription_url, subscription_crypto_link)
+                deep_link = _create_deep_link(
+                    app,
+                    subscription_url,
+                    subscription_crypto_link,
+                    subscription_incy_crypto_link,
+                )
             app['deepLink'] = deep_link
 
             # Resolve templates only for subscriptionLink and copyButton (not external)
@@ -3105,6 +3125,9 @@ async def get_app_config(
                     if not isinstance(btn, dict):
                         continue
                     btn_type = btn.get('type', '')
+                    if btn_type == 'subscriptionLink' and deep_link and (_is_app(app, 'happ') or _is_app(app, 'incy')):
+                        btn['resolvedUrl'] = deep_link
+                        continue
                     if btn_type in ('subscriptionLink', 'copyButton'):
                         url = btn.get('url', '') or btn.get('link', '')
                         if url and '{{' in url:
@@ -3112,6 +3135,7 @@ async def get_app_config(
                                 url,
                                 subscription_url,
                                 subscription_crypto_link,
+                                subscription_incy_crypto_link,
                             )
                             # Only set resolvedUrl if ALL templates were resolved;
                             # otherwise let the frontend fall through to deepLink/subscriptionUrl
@@ -3136,6 +3160,7 @@ async def get_app_config(
         'hasSubscription': bool(subscription_url or subscription_crypto_link),
         'subscriptionUrl': subscription_url,
         'subscriptionCryptoLink': subscription_crypto_link,
+        'subscriptionIncyCryptoLink': subscription_incy_crypto_link,
         'hideLink': hide_link,
         'branding': config.get('brandingSettings', {}),
     }
