@@ -27,6 +27,7 @@ logger = structlog.get_logger(__name__)
 
 
 SETTING_TITLES: dict[str, str] = {
+    'CABINET_CRYPTO_LINKS_ENABLED': 'Защищённые ссылки Happ и INCY',
     'ULTIMA_METERED_TRAFFIC_ENABLED': 'Раздельный учет трафика',
     'ULTIMA_METERED_SQUAD_UUID': 'Сквады тарифицируемых серверов',
     'ULTIMA_METERED_NODE_UUIDS': 'Ноды тарифицируемых серверов',
@@ -350,6 +351,7 @@ class BotConfigurationService:
         'REMNAWAVE_AUTO_SYNC_TIMES': 'REMNAWAVE',
         'SKIP_REFERRAL_CODE': 'REFERRAL',
         'CABINET_REMNA_SUB_CONFIG': 'MINIAPP',
+        'CABINET_CRYPTO_LINKS_ENABLED': 'MINIAPP',
     }
 
     CATEGORY_PREFIX_OVERRIDES: dict[str, str] = {

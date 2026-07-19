@@ -2957,13 +2957,20 @@ async def get_connection_link(
             detail='Subscription link not yet generated',
         )
 
-    display_link = get_display_subscription_link(user.subscription)
-    happ_redirect = get_happ_cryptolink_redirect_link(subscription_url) if settings.is_happ_cryptolink_mode() else None
+    crypto_links_enabled = bool(settings.CABINET_CRYPTO_LINKS_ENABLED)
+    display_link = get_display_subscription_link(user.subscription) if crypto_links_enabled else subscription_url
+    happ_redirect = (
+        get_happ_cryptolink_redirect_link(subscription_url)
+        if crypto_links_enabled and settings.is_happ_cryptolink_mode()
+        else None
+    )
     happ_scheme_link = (
-        convert_subscription_link_to_happ_scheme(subscription_url) if settings.is_happ_cryptolink_mode() else None
+        convert_subscription_link_to_happ_scheme(subscription_url)
+        if crypto_links_enabled and settings.is_happ_cryptolink_mode()
+        else None
     )
 
-    connect_mode = settings.CONNECT_BUTTON_MODE
+    connect_mode = settings.CONNECT_BUTTON_MODE if crypto_links_enabled else 'url'
     hide_subscription_link = settings.should_hide_subscription_link()
 
     return {
@@ -3036,13 +3043,19 @@ async def get_app_config(
 
     subscription_url = None
     subscription_crypto_link = None
+    crypto_links_enabled = bool(settings.CABINET_CRYPTO_LINKS_ENABLED)
     if user.subscription:
         subscription_url = user.subscription.subscription_url
-        subscription_crypto_link = user.subscription.subscription_crypto_link
+        if crypto_links_enabled:
+            subscription_crypto_link = user.subscription.subscription_crypto_link
 
     # Keep stored links on the current Happ crypt5 format. This also upgrades
     # users synced before crypt5 was introduced.
-    if subscription_url and not str(subscription_crypto_link or '').startswith('happ://crypt5/'):
+    if (
+        crypto_links_enabled
+        and subscription_url
+        and not str(subscription_crypto_link or '').startswith('happ://crypt5/')
+    ):
         try:
             service = RemnaWaveService()
             async with service.get_api_client() as api:
@@ -3069,7 +3082,9 @@ async def get_app_config(
 
     branding_settings = config.get('brandingSettings', {})
     provider_name = branding_settings.get('name') if isinstance(branding_settings, dict) else None
-    subscription_incy_crypto_link = _create_incy_crypto_link(subscription_url, provider_name)
+    subscription_incy_crypto_link = (
+        _create_incy_crypto_link(subscription_url, provider_name) if crypto_links_enabled else None
+    )
 
     config.pop('_isRemnawave', None)
     hide_link = settings.should_hide_subscription_link()
@@ -3106,9 +3121,14 @@ async def get_app_config(
             if not isinstance(app, dict):
                 continue
 
-            # Generate deep link
-            deep_link = None
-            if subscription_url or subscription_crypto_link:
+            # Protected clients fall back to the regular subscription URL when
+            # crypto-link delivery is disabled globally.
+            deep_link = (
+                subscription_url
+                if not crypto_links_enabled and (_is_app(app, 'happ') or _is_app(app, 'incy'))
+                else None
+            )
+            if deep_link is None and (subscription_url or subscription_crypto_link):
                 deep_link = _create_deep_link(
                     app,
                     subscription_url,
@@ -3161,6 +3181,7 @@ async def get_app_config(
         'subscriptionUrl': subscription_url,
         'subscriptionCryptoLink': subscription_crypto_link,
         'subscriptionIncyCryptoLink': subscription_incy_crypto_link,
+        'cryptoLinksEnabled': crypto_links_enabled,
         'hideLink': hide_link,
         'branding': config.get('brandingSettings', {}),
     }

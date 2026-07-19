@@ -36,6 +36,12 @@ class UpdateRemnaWaveUuidRequest(BaseModel):
     uuid: str | None = None
 
 
+class CryptoLinksSettings(BaseModel):
+    """Crypto-link delivery settings for cabinet clients."""
+
+    enabled: bool
+
+
 # ============ Helpers ============
 
 _UUID_PATTERN = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
@@ -47,6 +53,14 @@ def _get_remnawave_config_uuid() -> str | None:
         return bot_configuration_service.get_current_value('CABINET_REMNA_SUB_CONFIG')
     except Exception:
         return settings.CABINET_REMNA_SUB_CONFIG
+
+
+def _crypto_links_enabled() -> bool:
+    """Read the live DB-backed switch with an environment default fallback."""
+    try:
+        return bool(bot_configuration_service.get_current_value('CABINET_CRYPTO_LINKS_ENABLED'))
+    except Exception:
+        return bool(settings.CABINET_CRYPTO_LINKS_ENABLED)
 
 
 # ============ Routes ============
@@ -98,6 +112,48 @@ async def set_remnawave_config_uuid(
         enabled=bool(uuid_value),
         config_uuid=uuid_value,
     )
+
+
+@router.get('/crypto-links', response_model=CryptoLinksSettings)
+async def get_crypto_links_settings(
+    admin: User = Depends(require_permission('apps:read')),
+):
+    """Return whether protected Happ/INCY links are exposed by cabinet APIs."""
+    return CryptoLinksSettings(enabled=_crypto_links_enabled())
+
+
+@router.put('/crypto-links', response_model=CryptoLinksSettings)
+async def update_crypto_links_settings(
+    request: CryptoLinksSettings,
+    admin: User = Depends(require_permission('apps:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Enable or disable protected links without deleting stored payloads."""
+    try:
+        await bot_configuration_service.set_value(
+            db,
+            'CABINET_CRYPTO_LINKS_ENABLED',
+            request.enabled,
+        )
+        await db.commit()
+
+        from app.handlers.subscription.common import invalidate_app_config_cache
+
+        invalidate_app_config_cache()
+        logger.info(
+            'Admin updated cabinet crypto-link delivery',
+            admin_id=admin.id,
+            enabled=request.enabled,
+        )
+    except Exception as error:
+        await db.rollback()
+        logger.error('Error saving cabinet crypto-link delivery setting', error=error)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to save crypto-link setting',
+        ) from error
+
+    return CryptoLinksSettings(enabled=request.enabled)
 
 
 @router.get('/remnawave/config')
