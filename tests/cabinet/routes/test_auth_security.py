@@ -9,6 +9,7 @@ import app.cabinet.routes.auth as auth_routes
 from app.cabinet.schemas.auth import (
     EmailRegisterStandaloneRequest,
     EmailResendStandaloneRequest,
+    EmailVerifyRequest,
     RefreshTokenRequest,
 )
 
@@ -96,13 +97,17 @@ async def test_refresh_token_is_rotated_atomically(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_existing_unverified_registration_resends_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('user_status', ['active', 'deleted'])
+async def test_existing_unverified_registration_resends_verification(
+    monkeypatch: pytest.MonkeyPatch, user_status: str
+) -> None:
     user = SimpleNamespace(
         id=17,
         email='user@example.com',
         email_verified=False,
         password_hash='hashed',
-        status='active',
+        auth_type='email',
+        status=user_status,
         email_verification_token='old-token',
         email_verification_expires=None,
         language='ru',
@@ -146,13 +151,17 @@ async def test_existing_unverified_registration_resends_verification(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_public_resend_rotates_token_for_unverified_account(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('user_status', ['active', 'deleted'])
+async def test_public_resend_rotates_token_for_unverified_account(
+    monkeypatch: pytest.MonkeyPatch, user_status: str
+) -> None:
     user = SimpleNamespace(
         id=18,
         email='user@example.com',
         email_verified=False,
         password_hash='hashed',
-        status='active',
+        auth_type='email',
+        status=user_status,
         email_verification_token='old-token',
         email_verification_expires=None,
     )
@@ -186,6 +195,39 @@ async def test_public_resend_rotates_token_for_unverified_account(monkeypatch: p
     assert user.email_verification_token == 'new-token'
     db.commit.assert_awaited_once()
     send_verification.assert_awaited_once_with(db, user, 'new-token', email='user@example.com')
+
+
+@pytest.mark.asyncio
+async def test_verify_email_reactivates_recoverable_deleted_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    user = SimpleNamespace(
+        id=19,
+        email='user@example.com',
+        email_verified=False,
+        email_verified_at=None,
+        password_hash='hashed',
+        auth_type='email',
+        status='deleted',
+        email_verification_token='valid-token',
+        email_verification_expires=datetime.now(UTC) + timedelta(hours=1),
+        cabinet_last_login=None,
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: user)),
+        commit=AsyncMock(),
+    )
+    auth_response = SimpleNamespace(campaign_bonus=None, user=None, refresh_token='refresh-token')
+    monkeypatch.setattr(auth_routes, '_sync_subscription_from_panel_by_email', AsyncMock())
+    monkeypatch.setattr(auth_routes, '_create_auth_response', AsyncMock(return_value=auth_response))
+    monkeypatch.setattr(auth_routes, '_store_refresh_token', AsyncMock())
+    monkeypatch.setattr(auth_routes, '_process_campaign_bonus', AsyncMock(return_value=None))
+
+    response = await auth_routes.verify_email(EmailVerifyRequest(token='valid-token'), db)
+
+    assert response is auth_response
+    assert user.status == 'active'
+    assert user.email_verified is True
+    assert user.email_verification_token is None
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

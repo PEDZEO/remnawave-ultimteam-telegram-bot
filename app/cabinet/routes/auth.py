@@ -28,7 +28,7 @@ from app.database.crud.user import (
     set_email_change_pending,
     verify_and_apply_email_change,
 )
-from app.database.models import CabinetRefreshToken, User
+from app.database.models import CabinetRefreshToken, User, UserStatus
 from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
 from app.services.referral_service import process_referral_registration
@@ -82,6 +82,16 @@ from ..services.email_template_overrides import get_rendered_override
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/auth', tags=['Cabinet Auth'])
+
+
+def _is_recoverable_unverified_email_account(user: User) -> bool:
+    """Allow email proof to recover stale registrations, but never blocked/merged accounts."""
+    return bool(
+        not user.email_verified
+        and user.password_hash
+        and user.auth_type == 'email'
+        and user.status in {UserStatus.ACTIVE.value, UserStatus.DELETED.value}
+    )
 
 
 async def _send_verification_email(
@@ -798,12 +808,9 @@ async def register_email_standalone(
     existing = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     existing_user = existing.scalar_one_or_none()
     if existing_user:
-        can_resend = (
-            not existing_user.email_verified
-            and bool(existing_user.password_hash)
-            and existing_user.status == 'active'
-            and settings.is_cabinet_email_verification_enabled()
-        )
+        can_resend = _is_recoverable_unverified_email_account(
+            existing_user
+        ) and settings.is_cabinet_email_verification_enabled()
         if can_resend:
             verification_token = generate_verification_token()
             existing_user.email_verification_token = verification_token
@@ -941,6 +948,19 @@ async def verify_email(
             detail='Verification token has expired',
         )
 
+    if user.status == UserStatus.BLOCKED.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Account is blocked',
+        )
+    if user.status == UserStatus.DELETED.value:
+        if not _is_recoverable_unverified_email_account(user):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Invalid verification token',
+            )
+        user.status = UserStatus.ACTIVE.value
+
     # Mark email as verified
     user.email_verified = True
     user.email_verified_at = datetime.now(UTC)
@@ -995,7 +1015,7 @@ async def resend_verification_standalone(
 
     result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     user = result.scalar_one_or_none()
-    if user is None or user.email_verified or not user.password_hash or user.status != 'active':
+    if user is None or not _is_recoverable_unverified_email_account(user):
         return {'message': 'If this email is awaiting verification, a new link has been sent.'}
 
     verification_token = generate_verification_token()
