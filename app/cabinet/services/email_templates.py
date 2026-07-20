@@ -45,6 +45,8 @@ class EmailNotificationTemplates:
             NotificationType.SUBSCRIPTION_EXPIRED: self._subscription_expired_template,
             NotificationType.SUBSCRIPTION_RENEWED: self._subscription_renewed_template,
             NotificationType.SUBSCRIPTION_ACTIVATED: self._subscription_activated_template,
+            NotificationType.DEVICE_SLOTS_PURCHASED: self._device_slots_purchased_template,
+            NotificationType.TRAFFIC_PURCHASED: self._traffic_purchased_template,
             NotificationType.AUTOPAY_SUCCESS: self._autopay_success_template,
             NotificationType.AUTOPAY_FAILED: self._autopay_failed_template,
             NotificationType.AUTOPAY_INSUFFICIENT_FUNDS: self._autopay_insufficient_funds_template,
@@ -529,6 +531,80 @@ class EmailNotificationTemplates:
             """,
         }
 
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _device_slots_purchased_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for an additional device slot purchase."""
+        added = int(context.get('devices_added') or 0)
+        new_limit = int(context.get('new_device_limit') or 0)
+        amount = html.escape(str(context.get('formatted_amount') or ''))
+
+        subjects = {
+            'ru': 'Дополнительные устройства подключены',
+            'en': 'Additional device slots added',
+            'zh': '已添加额外设备名额',
+            'ua': 'Додаткові пристрої підключено',
+        }
+        bodies = {
+            'ru': f"""
+                <h2>Слоты для устройств добавлены</h2>
+                <div class="highlight success">
+                    <p>Добавлено: <strong>{added}</strong></p>
+                    <p>Новый лимит: <strong>{new_limit} устройств</strong></p>
+                    {f'<p>Списано: <strong>{amount}</strong></p>' if amount else ''}
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+            'en': f"""
+                <h2>Device slots added</h2>
+                <div class="highlight success">
+                    <p>Added: <strong>{added}</strong></p>
+                    <p>New limit: <strong>{new_limit} devices</strong></p>
+                    {f'<p>Charged: <strong>{amount}</strong></p>' if amount else ''}
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+        }
+        return {
+            'subject': subjects.get(language, subjects['ru']),
+            'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),
+        }
+
+    def _traffic_purchased_template(self, language: str, context: dict[str, Any]) -> dict[str, str]:
+        """Template for an additional traffic package purchase."""
+        added = context.get('traffic_gb_added') or 0
+        new_limit = context.get('new_traffic_limit_gb') or 0
+        amount = html.escape(str(context.get('formatted_amount') or ''))
+
+        subjects = {
+            'ru': 'Дополнительный трафик начислен',
+            'en': 'Additional traffic added',
+            'zh': '已添加额外流量',
+            'ua': 'Додатковий трафік нараховано',
+        }
+        bodies = {
+            'ru': f"""
+                <h2>Трафик успешно добавлен</h2>
+                <div class="highlight success">
+                    <p>Добавлено: <strong>{added} ГБ</strong></p>
+                    <p>Новый лимит: <strong>{new_limit} ГБ</strong></p>
+                    {f'<p>Списано: <strong>{amount}</strong></p>' if amount else ''}
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+            'en': f"""
+                <h2>Traffic successfully added</h2>
+                <div class="highlight success">
+                    <p>Added: <strong>{added} GB</strong></p>
+                    <p>New limit: <strong>{new_limit} GB</strong></p>
+                    {f'<p>Charged: <strong>{amount}</strong></p>' if amount else ''}
+                </div>
+                {self._get_cabinet_button(language)}
+            """,
+        }
         return {
             'subject': subjects.get(language, subjects['ru']),
             'body_html': self._get_base_template(bodies.get(language, bodies['ru']), language),

@@ -810,6 +810,16 @@ async def purchase_traffic(
     except Exception as e:
         logger.error('Failed to send admin notification for traffic purchase', error=e)
 
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.TRAFFIC_PURCHASED,
+        context={
+            'traffic_gb_added': request.gb,
+            'new_traffic_limit_gb': subscription.traffic_limit_gb,
+            'formatted_amount': settings.format_price(final_price),
+        },
+    )
+
     response = {
         'success': True,
         'message': 'Traffic purchased successfully',
@@ -993,6 +1003,16 @@ async def purchase_devices_legacy(
                 await bot.session.close()
     except Exception as e:
         logger.error('Failed to send admin notification for device purchase', error=e)
+
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.DEVICE_SLOTS_PURCHASED,
+        context={
+            'devices_added': request.devices,
+            'new_device_limit': actual_new,
+            'formatted_amount': settings.format_price(total_price),
+        },
+    )
 
     response = {
         'message': 'Devices added successfully',
@@ -1228,6 +1248,16 @@ async def activate_trial(
                 await bot.session.close()
     except Exception as e:
         logger.error('Failed to send trial activation notification', error=e)
+
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_ACTIVATED,
+        context={
+            'expires_at': subscription.end_date.strftime('%d.%m.%Y') if subscription.end_date else '',
+            'traffic_limit_gb': subscription.traffic_limit_gb,
+            'device_limit': subscription.device_limit,
+        },
+    )
 
     return _subscription_to_response(subscription)
 
@@ -1586,31 +1616,6 @@ async def submit_purchase(
         result = await purchase_service.submit_purchase(db, context, pricing)
 
         subscription = result['subscription']
-
-        # Send an email receipt to every user with a verified address.
-        if user.email and user.email_verified:
-            try:
-                is_new_subscription = result.get('was_trial_conversion') or not context.subscription
-                notification_type = (
-                    NotificationType.SUBSCRIPTION_ACTIVATED
-                    if is_new_subscription
-                    else NotificationType.SUBSCRIPTION_RENEWED
-                )
-                end_date_str = subscription.end_date.strftime('%d.%m.%Y') if subscription.end_date else ''
-                await notification_delivery_service.send_notification(
-                    user=user,
-                    notification_type=notification_type,
-                    context={
-                        'subscription': subscription,
-                        'expires_at': end_date_str,  # for SUBSCRIPTION_ACTIVATED
-                        'new_expires_at': end_date_str,  # for SUBSCRIPTION_RENEWED
-                        'traffic_limit_gb': subscription.traffic_limit_gb,
-                        'device_limit': subscription.device_limit,
-                    },
-                    bot=None,
-                )
-            except Exception as notif_error:
-                logger.warning('Failed to send subscription notification to', email=user.email, notif_error=notif_error)
 
         # Отправляем уведомление админам о покупке подписки
         try:
@@ -2356,6 +2361,16 @@ async def purchase_devices(
                     await bot.session.close()
         except Exception as e:
             logger.error('Failed to send admin notification for device purchase', error=e)
+
+        await notification_delivery_service.send_email_copy(
+            user=user,
+            notification_type=NotificationType.DEVICE_SLOTS_PURCHASED,
+            context={
+                'devices_added': request.devices,
+                'new_device_limit': subscription.device_limit,
+                'formatted_amount': settings.format_price(price_kopeks),
+            },
+        )
 
         response = {
             'success': True,

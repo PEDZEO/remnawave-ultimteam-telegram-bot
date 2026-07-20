@@ -1207,27 +1207,12 @@ class MonitoringService:
                 ]
             )
 
-            email_task = asyncio.create_task(
-                notification_delivery_service.send_email_copy(
-                    user=user,
-                    notification_type=NotificationType.SUBSCRIPTION_EXPIRING,
-                    context={
-                        'days_left': days,
-                        'expires_at': format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
-                    },
-                    fallback_message=message,
-                )
+            return await notification_delivery_service.notify_subscription_expired(
+                user=user,
+                bot=self.bot,
+                telegram_message=message,
+                telegram_markup=keyboard,
             )
-            try:
-                await self._send_message_with_logo(
-                    chat_id=user.telegram_id,
-                    text=message,
-                    parse_mode='HTML',
-                    reply_markup=keyboard,
-                )
-            finally:
-                await email_task
-            return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
             if await self._handle_unreachable_user(user, exc, 'уведомление об истечении подписки'):

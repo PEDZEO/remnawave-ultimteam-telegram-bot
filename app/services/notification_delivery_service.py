@@ -35,6 +35,8 @@ class NotificationType(Enum):
     SUBSCRIPTION_EXPIRING = 'subscription_expiring'
     SUBSCRIPTION_EXPIRED = 'subscription_expired'
     SUBSCRIPTION_RENEWED = 'subscription_renewed'
+    DEVICE_SLOTS_PURCHASED = 'device_slots_purchased'
+    TRAFFIC_PURCHASED = 'traffic_purchased'
 
     # Autopay notifications
     AUTOPAY_SUCCESS = 'autopay_success'

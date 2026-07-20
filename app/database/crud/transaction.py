@@ -28,6 +28,53 @@ REAL_PAYMENT_METHODS = [
 ]
 
 
+async def _send_external_deposit_email_copy(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    amount_kopeks: int,
+    type: TransactionType,
+    payment_method: PaymentMethod | None,
+    is_completed: bool,
+) -> None:
+    """Send one receipt for a completed external balance deposit."""
+    if (
+        type != TransactionType.DEPOSIT
+        or not is_completed
+        or payment_method in {None, PaymentMethod.MANUAL, PaymentMethod.BALANCE}
+    ):
+        return
+
+    try:
+        user = await db.get(User, user_id)
+        if user is None:
+            return
+
+        from app.config import settings
+        from app.services.notification_delivery_service import (
+            NotificationType,
+            notification_delivery_service,
+        )
+
+        await notification_delivery_service.send_email_copy(
+            user=user,
+            notification_type=NotificationType.PAYMENT_RECEIVED,
+            context={
+                'amount_kopeks': abs(amount_kopeks),
+                'amount_rubles': abs(amount_kopeks) / 100,
+                'formatted_amount': settings.format_price(abs(amount_kopeks)),
+                'payment_method': payment_method.value,
+            },
+        )
+    except Exception as error:
+        logger.warning(
+            'Failed to send external deposit email copy',
+            user_id=user_id,
+            payment_method=payment_method.value if payment_method else None,
+            error=error,
+        )
+
+
 async def create_transaction(
     db: AsyncSession,
     user_id: int,
@@ -116,6 +163,15 @@ async def create_transaction(
             except Exception as exc:
                 logger.debug('Не удалось записать событие конкурса для пользователя', user_id=user_id, exc=exc)
 
+        await _send_external_deposit_email_copy(
+            db,
+            user_id=user_id,
+            amount_kopeks=amount_kopeks,
+            type=type,
+            payment_method=payment_method,
+            is_completed=is_completed,
+        )
+
     return transaction
 
 
@@ -176,6 +232,15 @@ async def emit_transaction_side_effects(
             )
         except Exception as exc:
             logger.debug('Не удалось записать событие конкурса для пользователя', user_id=user_id, exc=exc)
+
+    await _send_external_deposit_email_copy(
+        db,
+        user_id=user_id,
+        amount_kopeks=amount_kopeks,
+        type=type,
+        payment_method=payment_method,
+        is_completed=is_completed,
+    )
 
 
 async def get_transaction_by_id(db: AsyncSession, transaction_id: int) -> Transaction | None:

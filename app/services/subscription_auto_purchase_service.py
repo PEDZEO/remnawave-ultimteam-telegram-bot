@@ -24,6 +24,7 @@ from app.services.device_traffic_bonus import (
     replace_traffic_package,
     sync_device_traffic_bonus,
 )
+from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.services.subscription_checkout_service import clear_subscription_checkout_draft
 from app.services.subscription_purchase_service import (
     MiniAppSubscriptionPurchaseService,
@@ -571,6 +572,12 @@ async def _auto_extend_subscription(
                 error=error,
             )
 
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_RENEWED,
+        context={'new_expires_at': end_date_label},
+    )
+
     logger.info(
         '✅ Автопокупка: подписка продлена на дней для пользователя',
         period_days=prepared.period_days,
@@ -861,6 +868,17 @@ async def _auto_purchase_tariff(
                 telegram_id=user.telegram_id or user.id,
                 error=error,
             )
+
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_ACTIVATED,
+        context={
+            'expires_at': format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
+            'tariff_name': tariff.name,
+            'traffic_limit_gb': subscription.traffic_limit_gb,
+            'device_limit': subscription.device_limit,
+        },
+    )
 
     logger.info(
         '✅ Автопокупка тарифа: подписка на тариф (дней) оформлена для пользователя',
@@ -1164,6 +1182,17 @@ async def _auto_purchase_daily_tariff(
                 error=error,
             )
 
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_ACTIVATED,
+        context={
+            'expires_at': format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
+            'tariff_name': tariff.name,
+            'traffic_limit_gb': subscription.traffic_limit_gb,
+            'device_limit': subscription.device_limit,
+        },
+    )
+
     logger.info(
         '✅ Автопокупка суточного тарифа: тариф активирован для пользователя',
         tariff_name=tariff.name,
@@ -1426,6 +1455,16 @@ async def _auto_add_devices(
                 '⚠️ Автопокупка устройств: не удалось уведомить пользователя', telegram_id=user.telegram_id, error=error
             )
 
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.DEVICE_SLOTS_PURCHASED,
+        context={
+            'devices_added': devices_to_add,
+            'new_device_limit': subscription.device_limit,
+            'formatted_amount': settings.format_price(price_kopeks),
+        },
+    )
+
     # Уведомление админам
     if bot:
         try:
@@ -1660,6 +1699,16 @@ async def _auto_add_traffic(
             logger.warning(
                 '⚠️ Автопокупка трафика: не удалось уведомить пользователя', telegram_id=user.telegram_id, error=error
             )
+
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.TRAFFIC_PURCHASED,
+        context={
+            'traffic_gb_added': traffic_gb,
+            'new_traffic_limit_gb': subscription.traffic_limit_gb,
+            'formatted_amount': settings.format_price(price_kopeks),
+        },
+    )
 
     # Admin notification
     if bot:
@@ -1963,6 +2012,12 @@ async def try_auto_extend_expired_after_topup(
                 error=error,
             )
 
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_RENEWED,
+        context={'new_expires_at': end_date_label},
+    )
+
     logger.info(
         '✅ Автопродление expired: подписка продлена для пользователя',
         period_days=period_days,
@@ -2230,6 +2285,14 @@ async def try_resume_disabled_daily_after_topup(
                 telegram_id=user.telegram_id or user.id,
                 error=error,
             )
+
+    await notification_delivery_service.send_email_copy(
+        user=user,
+        notification_type=NotificationType.SUBSCRIPTION_RENEWED,
+        context={
+            'new_expires_at': format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
+        },
+    )
 
     logger.info(
         '✅ Авто-возобновление daily: подписка возобновлена для пользователя',

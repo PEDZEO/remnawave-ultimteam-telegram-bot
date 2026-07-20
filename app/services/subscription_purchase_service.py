@@ -27,6 +27,7 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import subtract_user_balance
 from app.database.models import ServerSquad, Subscription, SubscriptionStatus, TransactionType, User
 from app.localization.texts import get_texts
+from app.services.notification_delivery_service import NotificationType, notification_delivery_service
 from app.services.subscription_service import SubscriptionService
 from app.utils.pricing_utils import (
     calculate_months_from_days,
@@ -1060,6 +1061,7 @@ class MiniAppSubscriptionPurchaseService:
                 context.subscription = subscription
 
         was_trial_conversion = False
+        was_existing_paid_subscription = bool(subscription and not subscription.is_trial)
         now = datetime.now(UTC)
 
         if subscription:
@@ -1172,6 +1174,23 @@ class MiniAppSubscriptionPurchaseService:
                 amount=texts.format_price(pricing.promo_discount_value),
             )
             message = f'{message}\n\n{note}'
+
+        notification_type = (
+            NotificationType.SUBSCRIPTION_RENEWED
+            if was_existing_paid_subscription
+            else NotificationType.SUBSCRIPTION_ACTIVATED
+        )
+        expires_at = subscription.end_date.strftime('%d.%m.%Y') if subscription.end_date else ''
+        await notification_delivery_service.send_email_copy(
+            user=user,
+            notification_type=notification_type,
+            context={
+                'expires_at': expires_at,
+                'new_expires_at': expires_at,
+                'traffic_limit_gb': subscription.traffic_limit_gb,
+                'device_limit': subscription.device_limit,
+            },
+        )
 
         return {
             'subscription': subscription,
