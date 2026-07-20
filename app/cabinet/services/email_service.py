@@ -1,9 +1,11 @@
 """Email service for sending verification and password reset emails."""
 
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
+from html.parser import HTMLParser
 
 import structlog
 
@@ -11,6 +13,77 @@ from app.config import settings
 
 
 logger = structlog.get_logger(__name__)
+
+
+class _PlainTextEmailParser(HTMLParser):
+    """Convert controlled notification HTML into a readable plain-text fallback."""
+
+    _ignored_tags = {'head', 'style', 'script'}
+    _block_tags = {
+        'address',
+        'article',
+        'blockquote',
+        'div',
+        'footer',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'header',
+        'li',
+        'p',
+        'section',
+        'table',
+        'tr',
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._ignored_depth = 0
+        self._link_stack: list[str | None] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._ignored_tags:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if tag == 'br':
+            self._parts.append('\n')
+        elif tag == 'li':
+            self._parts.append('\n- ')
+        elif tag == 'a':
+            self._link_stack.append(dict(attrs).get('href'))
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._ignored_tags:
+            if self._ignored_depth:
+                self._ignored_depth -= 1
+            return
+        if self._ignored_depth:
+            return
+        if tag == 'a' and self._link_stack:
+            href = self._link_stack.pop()
+            if href and href not in ''.join(self._parts[-4:]):
+                self._parts.append(f' ({href})')
+        if tag in self._block_tags:
+            self._parts.append('\n')
+
+    def handle_data(self, data: str) -> None:
+        if not self._ignored_depth:
+            self._parts.append(data)
+
+    def as_text(self) -> str:
+        text = ''.join(self._parts).replace('\r', '')
+        lines = [re.sub(r'[ \t\f\v]+', ' ', line).strip() for line in text.split('\n')]
+        compact_lines: list[str] = []
+        for line in lines:
+            if line or (compact_lines and compact_lines[-1]):
+                compact_lines.append(line)
+        return '\n'.join(compact_lines).strip()
 
 
 class EmailService:
@@ -68,6 +141,13 @@ class EmailService:
         )
         return error.smtp_code == 554 and 'spam' in response.lower()
 
+    @staticmethod
+    def _html_to_plain_text(body_html: str) -> str:
+        parser = _PlainTextEmailParser()
+        parser.feed(body_html)
+        parser.close()
+        return parser.as_text()
+
     def send_email(
         self,
         to_email: str,
@@ -94,14 +174,7 @@ class EmailService:
         try:
             # Plain text version
             if body_text is None:
-                # Simple HTML to text conversion
-                import re
-
-                body_text = re.sub(r'<[^>]+>', '', body_html)
-                body_text = body_text.replace('&nbsp;', ' ')
-                body_text = body_text.replace('&amp;', '&')
-                body_text = body_text.replace('&lt;', '<')
-                body_text = body_text.replace('&gt;', '>')
+                body_text = self._html_to_plain_text(body_html)
 
             msg = MIMEMultipart('alternative')
             self._set_message_headers(msg, to_email=to_email, subject=subject)
@@ -163,11 +236,13 @@ class EmailService:
             code_texts = {
                 'ru': {
                     'subject': 'Код подтверждения Ultimteam',
+                    'label': 'Подтверждение входа',
                     'intro': 'Введите этот код в кабинете, чтобы подтвердить email:',
                     'expires': 'Код действует ограниченное время. Никому его не сообщайте.',
                 },
                 'en': {
                     'subject': 'Your Ultimteam verification code',
+                    'label': 'Sign-in verification',
                     'intro': 'Enter this code in the account portal to verify your email:',
                     'expires': 'This code expires soon. Do not share it with anyone.',
                 },
@@ -175,12 +250,23 @@ class EmailService:
             code_text = code_texts.get(language, code_texts['en'])
             body_text = f'{code_text["intro"]}\n\n{verification_token}\n\n{code_text["expires"]}'
             body_html = (
-                '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">'
-                f'<p>{code_text["intro"]}</p>'
-                '<p style="font-size:32px;font-weight:700;letter-spacing:8px;margin:24px 0">'
-                f'{verification_token}</p>'
-                f'<p style="color:#667085;font-size:13px">{code_text["expires"]}</p>'
-                '</div>'
+                '<!doctype html><html><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+                '<body style="margin:0;background:#071312;color:#f3fffb;font-family:Arial,sans-serif">'
+                '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+                'style="background:#071312;padding:28px 12px"><tr><td align="center">'
+                '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+                'style="max-width:520px;background:#0c2421;border:1px solid #24534a;border-radius:16px;overflow:hidden">'
+                '<tr><td style="padding:22px 24px;border-bottom:1px solid #24534a">'
+                f'<div style="font-size:18px;font-weight:700;color:#72f1cf">{self.from_name}</div>'
+                f'<div style="margin-top:5px;font-size:12px;color:#92aaa4">{code_text["label"]}</div>'
+                '</td></tr><tr><td style="padding:28px 24px">'
+                f'<p style="margin:0;color:#c5d8d3;font-size:15px;line-height:1.55">{code_text["intro"]}</p>'
+                '<div style="margin:24px 0;padding:18px 12px;text-align:center;background:#071816;'
+                'border:1px solid #347566;border-radius:12px;font-size:34px;font-weight:700;letter-spacing:10px;'
+                f'color:#ffffff">{verification_token}</div>'
+                f'<p style="margin:0;color:#7f9992;font-size:12px;line-height:1.55">{code_text["expires"]}</p>'
+                '</td></tr></table></td></tr></table></body></html>'
             )
             return self.send_email(to_email, code_text['subject'], body_html, body_text)
 

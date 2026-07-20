@@ -127,100 +127,84 @@ class EmailNotificationTemplates:
             'fa': 'این یک پیام خودکار است. لطفاً به این ایمیل پاسخ ندهید.',
         }
         footer_text = footer_texts.get(language, footer_texts['ru'])
+        product_labels = {
+            'ru': 'Личный кабинет VPN',
+            'en': 'VPN account portal',
+            'zh': 'VPN 用户中心',
+            'ua': 'Особистий кабінет VPN',
+            'fa': 'پنل کاربری VPN',
+        }
+        product_label = product_labels.get(language, product_labels['en'])
 
         return f"""
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
     <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background-color: #f5f5f5;
-            margin: 0;
-            padding: 0;
-        }}
-        .container {{
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #ffffff;
-        }}
-        .header {{
-            text-align: center;
-            padding: 20px 0;
-            border-bottom: 2px solid #007bff;
-        }}
-        .header h1 {{
-            color: #007bff;
-            margin: 0;
-            font-size: 24px;
-        }}
-        .content {{
-            padding: 30px 20px;
-        }}
+        body {{ margin: 0; background: #071312; color: #eafff9; }}
+        body, table, td, a {{ font-family: Arial, Helvetica, sans-serif; }}
+        h1, h2, h3 {{ margin: 0 0 14px; color: #ffffff; line-height: 1.2; }}
+        h2 {{ font-size: 24px; }}
+        p {{ margin: 0 0 12px; color: #bfd2cc; font-size: 15px; line-height: 1.6; }}
+        strong {{ color: #ffffff; }}
+        .content {{ padding: 28px 26px 22px; }}
         .highlight {{
-            background-color: #f8f9fa;
-            border-left: 4px solid #007bff;
-            padding: 15px;
             margin: 20px 0;
+            padding: 16px 18px;
+            background: #0a1b19;
+            border: 1px solid #28574e;
+            border-left: 4px solid #61e7c4;
+            border-radius: 10px;
         }}
-        .success {{
-            border-left-color: #28a745;
-        }}
-        .warning {{
-            border-left-color: #ffc107;
-        }}
-        .danger {{
-            border-left-color: #dc3545;
-        }}
+        .highlight p:last-child {{ margin-bottom: 0; }}
+        .success {{ border-left-color: #61e7c4; }}
+        .warning {{ border-left-color: #f4c95d; }}
+        .danger {{ border-left-color: #ff7777; }}
         .button {{
             display: inline-block;
-            padding: 12px 24px;
-            background-color: #007bff;
-            color: white !important;
+            margin: 12px 0 4px;
+            padding: 13px 22px;
+            background: #38dbb1;
+            color: #041310 !important;
             text-decoration: none;
-            border-radius: 5px;
-            margin: 20px 0;
-            font-weight: bold;
+            border-radius: 9px;
+            font-size: 14px;
+            font-weight: 700;
         }}
-        .button:hover {{
-            background-color: #0056b3;
-        }}
-        .footer {{
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
-            font-size: 12px;
-            color: #666;
-            text-align: center;
-        }}
-        .amount {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #28a745;
-        }}
-        .amount.negative {{
-            color: #dc3545;
+        .amount {{ font-size: 23px; font-weight: 700; color: #70efcd; }}
+        .amount.negative {{ color: #ff8585; }}
+        @media only screen and (max-width: 620px) {{
+            .email-frame {{ padding: 14px 8px !important; }}
+            .content {{ padding: 24px 18px 18px !important; }}
+            h2 {{ font-size: 22px !important; }}
         }}
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>{self.service_name}</h1>
-        </div>
-        <div class="content">
-            {content}
-        </div>
-        <div class="footer">
-            <p>&copy; {self.service_name}</p>
-            <p>{footer_text}</p>
-        </div>
-    </div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#071312">
+        <tr>
+            <td class="email-frame" align="center" style="padding:28px 12px">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#0c2421;border:1px solid #24534a;border-radius:16px;overflow:hidden">
+                    <tr>
+                        <td style="padding:21px 26px;border-bottom:1px solid #24534a">
+                            <div style="font-size:19px;font-weight:700;color:#72f1cf">{self.service_name}</div>
+                            <div style="margin-top:5px;font-size:12px;color:#829b94">{product_label}</div>
+                        </td>
+                    </tr>
+                    <tr><td class="content">{content}</td></tr>
+                    <tr>
+                        <td style="padding:18px 26px;border-top:1px solid #24534a;text-align:center">
+                            <p style="margin:0 0 5px;color:#78918a;font-size:12px">&copy; {self.service_name}</p>
+                            <p style="margin:0;color:#668079;font-size:11px;line-height:1.5">{footer_text}</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>
 """
