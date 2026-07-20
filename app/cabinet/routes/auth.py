@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from ipaddress import ip_address, ip_network
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +28,7 @@ from app.database.crud.user import (
     set_email_change_pending,
     verify_and_apply_email_change,
 )
+from app.database.database import AsyncSessionLocal
 from app.database.models import CabinetRefreshToken, User, UserStatus
 from app.services.campaign_service import AdvertisingCampaignService
 from app.services.disposable_email_service import disposable_email_service
@@ -491,6 +492,17 @@ async def _sync_subscription_from_panel_by_email(db: AsyncSession, user: User) -
         # The sync is non-critical, main verification already succeeded
 
 
+async def _sync_subscription_after_email_verification(user_id: int) -> None:
+    """Sync panel data after the verification response has already been sent."""
+    try:
+        async with AsyncSessionLocal() as db:
+            user = await get_user_by_id(db, user_id)
+            if user:
+                await _sync_subscription_from_panel_by_email(db, user)
+    except Exception:
+        logger.exception('Background subscription sync failed after email verification', user_id=user_id)
+
+
 @router.post('/telegram', response_model=AuthResponse)
 async def auth_telegram(
     request: TelegramAuthRequest,
@@ -931,6 +943,7 @@ async def register_email_standalone(
 async def verify_email(
     request: EmailVerifyRequest,
     http_request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Verify email with token and return auth tokens."""
@@ -985,9 +998,6 @@ async def verify_email(
 
     await db.commit()
 
-    # Check if user has subscription in RemnaWave panel by email
-    await _sync_subscription_from_panel_by_email(db, user)
-
     # Return auth tokens so user is logged in after verification
     response = await _create_auth_response(user, db)
     await _store_refresh_token(db, user.id, response.refresh_token)
@@ -996,6 +1006,9 @@ async def verify_email(
     response.campaign_bonus = await _process_campaign_bonus(db, user, request.campaign_slug)
     if response.campaign_bonus:
         response.user = _user_to_response(user)
+
+    # Panel lookups can take several seconds. They do not need to block login.
+    background_tasks.add_task(_sync_subscription_after_email_verification, user.id)
 
     return response
 

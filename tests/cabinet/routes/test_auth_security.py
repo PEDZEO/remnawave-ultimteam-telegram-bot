@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 import app.cabinet.routes.auth as auth_routes
 from app.cabinet.schemas.auth import (
@@ -216,16 +216,19 @@ async def test_verify_email_reactivates_recoverable_deleted_account(monkeypatch:
         commit=AsyncMock(),
     )
     auth_response = SimpleNamespace(campaign_bonus=None, user=None, refresh_token='refresh-token')
-    monkeypatch.setattr(auth_routes, '_sync_subscription_from_panel_by_email', AsyncMock())
+    sync_subscription = AsyncMock()
+    monkeypatch.setattr(auth_routes, '_sync_subscription_from_panel_by_email', sync_subscription)
     monkeypatch.setattr(auth_routes, '_create_auth_response', AsyncMock(return_value=auth_response))
     monkeypatch.setattr(auth_routes, '_store_refresh_token', AsyncMock())
     monkeypatch.setattr(auth_routes, '_process_campaign_bonus', AsyncMock(return_value=None))
 
     monkeypatch.setattr(auth_routes, '_enforce_auth_rate_limit', AsyncMock())
 
+    background_tasks = BackgroundTasks()
     response = await auth_routes.verify_email(
         EmailVerifyRequest(token='valid-token'),
         SimpleNamespace(client=SimpleNamespace(host='203.0.113.10')),
+        background_tasks,
         db,
     )
 
@@ -234,6 +237,8 @@ async def test_verify_email_reactivates_recoverable_deleted_account(monkeypatch:
     assert user.email_verified is True
     assert user.email_verification_token is None
     db.commit.assert_awaited_once()
+    sync_subscription.assert_not_awaited()
+    assert len(background_tasks.tasks) == 1
 
 
 @pytest.mark.asyncio
