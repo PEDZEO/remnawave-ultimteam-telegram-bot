@@ -809,9 +809,9 @@ async def register_email_standalone(
     existing = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     existing_user = existing.scalar_one_or_none()
     if existing_user:
-        can_resend = _is_recoverable_unverified_email_account(
-            existing_user
-        ) and settings.is_cabinet_email_verification_enabled()
+        can_resend = (
+            _is_recoverable_unverified_email_account(existing_user) and settings.is_cabinet_email_verification_enabled()
+        )
         if can_resend:
             verification_token = generate_verification_code()
             existing_user.email_verification_token = verification_token

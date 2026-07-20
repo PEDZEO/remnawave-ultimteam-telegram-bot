@@ -63,7 +63,9 @@ class EmailService:
 
     @staticmethod
     def _is_spam_rejection(error: smtplib.SMTPDataError) -> bool:
-        response = error.smtp_error.decode(errors='ignore') if isinstance(error.smtp_error, bytes) else str(error.smtp_error)
+        response = (
+            error.smtp_error.decode(errors='ignore') if isinstance(error.smtp_error, bytes) else str(error.smtp_error)
+        )
         return error.smtp_code == 554 and 'spam' in response.lower()
 
     def send_email(
@@ -171,7 +173,7 @@ class EmailService:
                 },
             }
             code_text = code_texts.get(language, code_texts['en'])
-            body_text = f"{code_text['intro']}\n\n{verification_token}\n\n{code_text['expires']}"
+            body_text = f'{code_text["intro"]}\n\n{verification_token}\n\n{code_text["expires"]}'
             body_html = (
                 '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">'
                 f'<p>{code_text["intro"]}</p>'
