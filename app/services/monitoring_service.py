@@ -53,6 +53,7 @@ from app.external.remnawave_api import (
 from app.localization.texts import get_texts
 from app.services.metered_traffic_policy import panel_traffic_limit_bytes
 from app.services.notification_delivery_service import (
+    NotificationType,
     notification_delivery_service,
 )
 from app.services.notification_settings_service import NotificationSettingsService
@@ -1092,7 +1093,12 @@ class MonitoringService:
 
                         # Send notification via appropriate channel
                         if user.telegram_id and self.bot:
-                            await self._send_autopay_success_notification(user, charge_amount, 30)
+                            await self._send_autopay_success_notification(
+                                user,
+                                charge_amount,
+                                30,
+                                subscription.end_date,
+                            )
                         elif not user.telegram_id:
                             # Email-only user - use notification delivery service
                             await notification_delivery_service.notify_autopay_success(
@@ -1201,12 +1207,26 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
-                chat_id=user.telegram_id,
-                text=message,
-                parse_mode='HTML',
-                reply_markup=keyboard,
+            email_task = asyncio.create_task(
+                notification_delivery_service.send_email_copy(
+                    user=user,
+                    notification_type=NotificationType.SUBSCRIPTION_EXPIRING,
+                    context={
+                        'days_left': days,
+                        'expires_at': format_local_datetime(subscription.end_date, '%d.%m.%Y %H:%M'),
+                    },
+                    fallback_message=message,
+                )
             )
+            try:
+                await self._send_message_with_logo(
+                    chat_id=user.telegram_id,
+                    text=message,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                )
+            finally:
+                await email_task
             return True
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
@@ -1582,15 +1602,37 @@ class MonitoringService:
             logger.error('Ошибка отправки скидочного уведомления пользователю', telegram_id=user.telegram_id, e=e)
             return False
 
-    async def _send_autopay_success_notification(self, user: User, amount: int, days: int):
+    async def _send_autopay_success_notification(
+        self,
+        user: User,
+        amount: int,
+        days: int,
+        new_expires_at: Any | None = None,
+    ):
         try:
             texts = get_texts(user.language)
             message = texts.AUTOPAY_SUCCESS.format(days=days, amount=settings.format_price(amount))
-            await self._send_message_with_logo(
-                chat_id=user.telegram_id,
-                text=message,
-                parse_mode='HTML',
+            email_task = asyncio.create_task(
+                notification_delivery_service.send_email_copy(
+                    user=user,
+                    notification_type=NotificationType.AUTOPAY_SUCCESS,
+                    context={
+                        'amount_kopeks': amount,
+                        'amount_rubles': amount / 100,
+                        'formatted_amount': settings.format_price(amount),
+                        'new_expires_at': str(new_expires_at or ''),
+                    },
+                    fallback_message=message,
+                )
             )
+            try:
+                await self._send_message_with_logo(
+                    chat_id=user.telegram_id,
+                    text=message,
+                    parse_mode='HTML',
+                )
+            finally:
+                await email_task
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
             if not await self._handle_unreachable_user(user, exc, 'уведомление об успешном автоплатеже'):
                 logger.error(
@@ -1621,12 +1663,27 @@ class MonitoringService:
                 ]
             )
 
-            await self._send_message_with_logo(
-                chat_id=user.telegram_id,
-                text=message,
-                parse_mode='HTML',
-                reply_markup=keyboard,
+            email_task = asyncio.create_task(
+                notification_delivery_service.send_email_copy(
+                    user=user,
+                    notification_type=NotificationType.AUTOPAY_FAILED,
+                    context={
+                        'reason': 'Недостаточно средств на балансе',
+                        'balance': settings.format_price(balance),
+                        'required': settings.format_price(required),
+                    },
+                    fallback_message=message,
+                )
             )
+            try:
+                await self._send_message_with_logo(
+                    chat_id=user.telegram_id,
+                    text=message,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                )
+            finally:
+                await email_task
 
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
             if not await self._handle_unreachable_user(user, exc, 'уведомление о неудачном автоплатеже'):

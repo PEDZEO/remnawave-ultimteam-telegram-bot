@@ -77,21 +77,23 @@ class CabinetConnectionManager:
 
         logger.debug('Cabinet WS disconnected: user_id', user_id=user_id)
 
-    async def send_to_user(self, user_id: int, message: dict) -> None:
+    async def send_to_user(self, user_id: int, message: dict) -> bool:
         """Отправить сообщение конкретному пользователю."""
         # Snapshot connections under the lock to avoid mutation during iteration
         async with self._lock:
             connections = list(self._user_connections.get(user_id, set()))
 
         if not connections:
-            return
+            return False
 
         disconnected = set()
+        delivered_count = 0
         data = json.dumps(message, default=str, ensure_ascii=False)
 
         for ws in connections:
             try:
                 await ws.send_text(data)
+                delivered_count += 1
             except Exception as e:
                 logger.warning('Failed to send to user', user_id=user_id, e=e)
                 disconnected.add(ws)
@@ -101,6 +103,8 @@ class CabinetConnectionManager:
             async with self._lock:
                 for ws in disconnected:
                     self._user_connections.get(user_id, set()).discard(ws)
+
+        return delivered_count > 0
 
     async def send_to_admins(self, message: dict) -> None:
         """Отправить сообщение всем админам."""

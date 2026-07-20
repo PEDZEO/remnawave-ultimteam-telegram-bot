@@ -990,6 +990,8 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str | None = None
     SMTP_FROM_NAME: str = 'VPN Service'
     SMTP_USE_TLS: bool = True
+    SMTP_TIMEOUT_SECONDS: int = 15
+    USER_EMAIL_NOTIFICATIONS_ENABLED: bool = True
 
     # Ban System Integration (BedolagaBan monitoring)
     BAN_SYSTEM_ENABLED: bool = False
@@ -3073,6 +3075,12 @@ class Settings(BaseSettings):
         # For servers without AUTH, only host and from_email are required
         has_from = bool(self.SMTP_FROM_EMAIL or self.SMTP_USER)
         return bool(self.SMTP_HOST and has_from)
+
+    def are_user_email_notifications_enabled(self) -> bool:
+        return bool(self.USER_EMAIL_NOTIFICATIONS_ENABLED and self.is_smtp_configured())
+
+    def get_smtp_timeout_seconds(self) -> int:
+        return max(3, min(60, int(self.SMTP_TIMEOUT_SECONDS)))
 
     def get_smtp_from_email(self) -> str | None:
         if self.SMTP_FROM_EMAIL:

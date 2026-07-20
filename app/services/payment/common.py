@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -159,6 +160,10 @@ class PaymentCommonMixin:
         """Отправляет пользователю уведомление об успешном платеже."""
         # Lazy import to avoid circular dependency
         from app.cabinet.routes.websocket import notify_user_balance_topup
+        from app.services.notification_delivery_service import (
+            NotificationType,
+            notification_delivery_service,
+        )
 
         # Send WebSocket notification to cabinet frontend (works for both Telegram and email-only users)
         user_id = getattr(user, 'id', None) if user else None
@@ -179,32 +184,49 @@ class PaymentCommonMixin:
                     ws_error=ws_error,
                 )
 
+        payment_method = payment_method_title or 'Банковская карта (YooKassa)'
+        message = (
+            '✅ <b>Платеж успешно завершен!</b>\n\n'
+            f'💰 Сумма: {settings.format_price(amount_kopeks)}\n'
+            f'💳 Способ: {payment_method}\n\n'
+            'Средства зачислены на ваш баланс!'
+        )
+        email_task = None
+        if user is not None:
+            email_task = asyncio.create_task(
+                notification_delivery_service.send_email_copy(
+                    user=user,
+                    notification_type=NotificationType.PAYMENT_RECEIVED,
+                    context={
+                        'amount_kopeks': amount_kopeks,
+                        'amount_rubles': amount_kopeks / 100,
+                        'formatted_amount': settings.format_price(amount_kopeks),
+                        'payment_method': payment_method,
+                    },
+                    fallback_message=message,
+                )
+            )
+
         if not getattr(self, 'bot', None):
             # Если бот не передан (например, внутри фоновых задач), уведомление пропускаем.
+            if email_task:
+                await email_task
             return
 
         # Skip email-only users (no telegram_id)
         if not telegram_id:
+            if email_task:
+                await email_task
             return
 
-        user_snapshot = await self._ensure_user_snapshot(
-            telegram_id,
-            user,
-            db=db,
-        )
-
         try:
-            payment_method = payment_method_title or 'Банковская карта (YooKassa)'
-
+            user_snapshot = await self._ensure_user_snapshot(
+                telegram_id,
+                user,
+                db=db,
+            )
             # Стандартное сообщение с полной клавиатурой
             keyboard = await self.build_topup_success_keyboard(user_snapshot)
-            message = (
-                '✅ <b>Платеж успешно завершен!</b>\n\n'
-                f'💰 Сумма: {settings.format_price(amount_kopeks)}\n'
-                f'💳 Способ: {payment_method}\n\n'
-                'Средства зачислены на ваш баланс!'
-            )
-
             await self.bot.send_message(
                 chat_id=telegram_id,
                 text=message,
@@ -213,6 +235,9 @@ class PaymentCommonMixin:
             )
         except Exception as error:
             logger.error('Ошибка отправки уведомления пользователю', telegram_id=telegram_id, error=error)
+        finally:
+            if email_task:
+                await email_task
 
     async def _ensure_user_snapshot(
         self,

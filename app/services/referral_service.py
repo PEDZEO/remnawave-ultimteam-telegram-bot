@@ -36,21 +36,22 @@ async def send_referral_notification(
         bonus_kopeks: Сумма бонуса в копейках
         referral_name: Имя реферала
     """
-    # Handle email-only users via notification delivery service
-    if telegram_id is None:
-        if user is not None:
-            success = await notification_delivery_service.notify_referral_bonus(
-                user=user,
-                bonus_kopeks=bonus_kopeks,
-                referral_name=referral_name,
-                telegram_message=message,
-            )
-            if success:
-                logger.info('✅ Email уведомление о реферале отправлено пользователю', user_id=user.id)
-            else:
-                logger.warning('⚠️ Не удалось отправить email уведомление пользователю', user_id=user.id)
+    if user is not None:
+        success = await notification_delivery_service.notify_referral_bonus(
+            user=user,
+            bonus_kopeks=bonus_kopeks,
+            referral_name=referral_name,
+            bot=bot,
+            telegram_message=message,
+        )
+        if success:
+            logger.info('✅ Реферальное уведомление доставлено пользователю', user_id=user.id)
         else:
-            logger.debug('Пропуск уведомления: пользователь без telegram_id и без User object')
+            logger.warning('⚠️ Не удалось доставить реферальное уведомление', user_id=user.id)
+        return
+
+    if telegram_id is None:
+        logger.debug('Пропуск уведомления: пользователь без telegram_id и без User object')
         return
 
     try:

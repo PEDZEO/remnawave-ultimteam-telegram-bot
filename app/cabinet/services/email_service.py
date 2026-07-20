@@ -23,6 +23,7 @@ class EmailService:
         self.from_email = settings.get_smtp_from_email()
         self.from_name = settings.SMTP_FROM_NAME
         self.use_tls = settings.SMTP_USE_TLS
+        self.timeout = settings.get_smtp_timeout_seconds()
 
     def is_configured(self) -> bool:
         """Check if SMTP is properly configured."""
@@ -30,7 +31,7 @@ class EmailService:
 
     def _get_smtp_connection(self) -> smtplib.SMTP:
         """Create and return SMTP connection."""
-        smtp = smtplib.SMTP(self.host, self.port)
+        smtp = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
         smtp.ehlo()
 
         if self.use_tls:

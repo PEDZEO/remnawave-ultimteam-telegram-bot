@@ -1587,8 +1587,8 @@ async def submit_purchase(
 
         subscription = result['subscription']
 
-        # Send email notification for email-only users
-        if not user.telegram_id and user.email and user.email_verified:
+        # Send an email receipt to every user with a verified address.
+        if user.email and user.email_verified:
             try:
                 is_new_subscription = result.get('was_trial_conversion') or not context.subscription
                 notification_type = (
@@ -2057,8 +2057,8 @@ async def purchase_tariff(
             response['promo_offer_discount_label'] = settings.format_price(promo_offer_discount_value)
             response['price_before_promo_offer_kopeks'] = price_before_promo_offer
 
-        # Send email notification for email-only users
-        if not user.telegram_id and user.email and user.email_verified:
+        # Send an email receipt to every user with a verified address.
+        if user.email and user.email_verified:
             try:
                 # Determine if this is a new subscription or extension
                 was_new_subscription = (

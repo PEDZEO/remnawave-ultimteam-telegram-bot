@@ -1,9 +1,10 @@
 """
 Unified notification delivery service for all user types.
 
-This service handles notification delivery through appropriate channels:
+This service delivers notifications independently through every available channel:
 - Telegram Bot for users with telegram_id
-- Email + WebSocket for email-only users
+- Email for users with a verified address
+- WebSocket for cabinet users with an active connection
 """
 
 import asyncio
@@ -90,8 +91,8 @@ class NotificationDeliveryService:
     """
     Service for delivering notifications to users through appropriate channels.
 
-    For Telegram users: sends via Telegram Bot
-    For email-only users: sends via Email and WebSocket (if connected)
+    A user can receive the same event through Telegram, email and the cabinet.
+    A failure in one channel never blocks the remaining channels or business flow.
     """
 
     def __init__(self):
@@ -136,7 +137,7 @@ class NotificationDeliveryService:
         telegram_markup: Any | None = None,
     ) -> bool:
         """
-        Send notification to user through appropriate channel.
+        Send a notification through every available channel.
 
         Args:
             user: User to notify
@@ -150,50 +151,70 @@ class NotificationDeliveryService:
             True if notification was sent successfully through at least one channel
         """
         try:
-            if user.status in (UserStatus.BLOCKED.value, UserStatus.DELETED.value):
-                logger.debug('Пропускаем уведомление для неактивного пользователя', user_id=user.id, status=user.status)
-                return False
-
-            if user.telegram_id:
-                # User has Telegram - send via bot
-                return await self._send_telegram_notification(
-                    user=user,
-                    notification_type=notification_type,
-                    context=context,
-                    bot=bot,
-                    message=telegram_message,
-                    markup=telegram_markup,
-                )
-            if user.email and user.email_verified:
-                # Email-only user - send via email and WebSocket
-                results = await asyncio.gather(
-                    self._send_email_notification(user, notification_type, context),
-                    self._send_websocket_notification(user, notification_type, context),
-                    return_exceptions=True,
-                )
-
-                email_sent = results[0] is True
-                ws_sent = results[1] is True
-
-                if email_sent or ws_sent:
-                    logger.info(
-                        'Уведомление отправлено email-пользователю (email ws=)',
-                        notification_type_value=notification_type.value,
-                        user_id=user.id,
-                        email_sent=email_sent,
-                        ws_sent=ws_sent,
-                    )
-                    return True
-                logger.warning(
-                    'Не удалось отправить уведомление email-пользователю',
-                    notification_type_value=notification_type.value,
+            user_status = getattr(user, 'status', None)
+            is_ban_event = notification_type is NotificationType.BAN_NOTIFICATION
+            if user_status == UserStatus.DELETED.value or (
+                user_status == UserStatus.BLOCKED.value and not is_ban_event
+            ):
+                logger.debug(
+                    'Skipping notification for inactive user',
                     user_id=user.id,
+                    status=user_status,
+                    notification_type_value=notification_type.value,
                 )
                 return False
-            logger.debug(
-                'Пользователь не имеет telegram_id или verified email, пропускаем уведомление', user_id=user.id
+
+            channel_names: list[str] = []
+            deliveries: list[Any] = []
+
+            if getattr(user, 'telegram_id', None) and bot and telegram_message:
+                channel_names.append('telegram')
+                deliveries.append(
+                    self._send_telegram_notification(
+                        user=user,
+                        notification_type=notification_type,
+                        context=context,
+                        bot=bot,
+                        message=telegram_message,
+                        markup=telegram_markup,
+                    )
+                )
+
+            has_verified_email = bool(getattr(user, 'email', None) and getattr(user, 'email_verified', False))
+            if has_verified_email and settings.are_user_email_notifications_enabled():
+                channel_names.append('email')
+                deliveries.append(
+                    self._send_email_notification(
+                        user,
+                        notification_type,
+                        context,
+                        fallback_message=telegram_message,
+                    )
+                )
+
+            channel_names.append('websocket')
+            deliveries.append(self._send_websocket_notification(user, notification_type, context))
+
+            if not deliveries:
+                logger.debug(
+                    'No configured notification channel is available for user',
+                    user_id=user.id,
+                    notification_type_value=notification_type.value,
+                )
+                return False
+
+            results = await asyncio.gather(*deliveries, return_exceptions=True)
+            delivery_results = {channel: result is True for channel, result in zip(channel_names, results, strict=True)}
+            delivered = any(delivery_results.values())
+
+            log = logger.info if delivered else logger.warning
+            log(
+                'User notification delivery completed',
+                notification_type_value=notification_type.value,
+                user_id=user.id,
+                channels=delivery_results,
             )
-            return False
+            return delivered
         except Exception as error:
             logger.error(
                 'Unexpected error during notification delivery (suppressed to protect business flow)',
@@ -262,6 +283,7 @@ class NotificationDeliveryService:
         user: User,
         notification_type: NotificationType,
         context: dict[str, Any],
+        fallback_message: str | None = None,
     ) -> bool:
         """Send notification via email."""
         if not self.email_service.is_configured():
@@ -295,6 +317,13 @@ class NotificationDeliveryService:
             if not template:
                 template = self.email_templates.get_template(notification_type, language, context)
 
+            if not template and fallback_message:
+                template = self.email_templates.get_generic_notification_template(
+                    notification_type,
+                    language,
+                    fallback_message,
+                )
+
             if not template:
                 logger.warning('Не найден email шаблон для', notification_type_value=notification_type.value)
                 return False
@@ -322,6 +351,38 @@ class NotificationDeliveryService:
             logger.error('Ошибка отправки email уведомления пользователю', user_id=user.id, e=e)
             return False
 
+    async def send_email_copy(
+        self,
+        user: User,
+        notification_type: NotificationType,
+        context: dict[str, Any],
+        fallback_message: str | None = None,
+    ) -> bool:
+        """Send only an email copy without affecting Telegram delivery."""
+        if not settings.are_user_email_notifications_enabled():
+            return False
+        if not getattr(user, 'email', None) or not getattr(user, 'email_verified', False):
+            return False
+        if getattr(user, 'status', None) == UserStatus.DELETED.value:
+            return False
+
+        try:
+            return await self._send_email_notification(
+                user,
+                notification_type,
+                context,
+                fallback_message=fallback_message,
+            )
+        except Exception as error:
+            logger.error(
+                'Email copy delivery failed (suppressed to protect business flow)',
+                user_id=getattr(user, 'id', None),
+                notification_type_value=notification_type.value,
+                error=error,
+                exc_info=True,
+            )
+            return False
+
     async def _send_websocket_notification(
         self,
         user: User,
@@ -335,8 +396,7 @@ class NotificationDeliveryService:
                 **context,
             }
 
-            await self.ws_manager.send_to_user(user.id, message)
-            return True
+            return await self.ws_manager.send_to_user(user.id, message)
 
         except Exception as e:
             logger.debug('WebSocket уведомление не отправлено пользователю', user_id=user.id, e=e)

@@ -5,6 +5,7 @@ Supports multiple languages: ru, en, zh, ua, fa
 """
 
 import html
+import re
 from typing import Any
 
 from app.config import settings
@@ -69,6 +70,50 @@ class EmailNotificationTemplates:
             return None
 
         return template_func(language, context)
+
+    def get_generic_notification_template(
+        self,
+        notification_type: 'NotificationType',
+        language: str,
+        telegram_message: str,
+    ) -> dict[str, str] | None:
+        """Build a safe email copy for events without a dedicated template."""
+        plain_text = html.unescape(re.sub(r'<[^>]+>', '', telegram_message)).strip()
+        if not plain_text:
+            return None
+
+        language_code = (language or 'ru').split('-', 1)[0].lower()
+        generic_subjects = {
+            'ru': f'Уведомление {self.service_name}',
+            'en': f'{self.service_name} notification',
+            'zh': f'{self.service_name} 通知',
+            'ua': f'Сповіщення {self.service_name}',
+            'fa': f'اعلان {self.service_name}',
+        }
+        traffic_subjects = {
+            'ru': 'Трафик спецсерверов заканчивается',
+            'en': 'Special-server traffic is running low',
+            'zh': '特殊服务器流量即将用尽',
+            'ua': 'Трафік спеціальних серверів закінчується',
+            'fa': 'ترافیک سرورهای ویژه رو به اتمام است',
+        }
+
+        notification_value = getattr(notification_type, 'value', str(notification_type))
+        subjects = traffic_subjects if notification_value == 'webhook_sub_bandwidth_threshold' else generic_subjects
+        subject = subjects.get(language_code, subjects['en'])
+        safe_message = html.escape(plain_text).replace('\n', '<br>')
+        content = f"""
+            <h2>{html.escape(subject)}</h2>
+            <div class="highlight">
+                <p>{safe_message}</p>
+            </div>
+            {self._get_cabinet_button(language_code)}
+        """
+        return {
+            'subject': subject,
+            'body_html': self._get_base_template(content, language_code),
+            'body_text': plain_text,
+        }
 
     def _get_base_template(self, content: str, language: str = 'ru') -> str:
         """Wrap content in base HTML template."""
