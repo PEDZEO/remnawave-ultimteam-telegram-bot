@@ -833,7 +833,7 @@ async def register_email_standalone(
                 )
 
             return RegisterResponse(
-                message='Verification email resent. Please check your inbox.',
+                message='Verification code resent. Please check your inbox.',
                 email=normalized_email,
                 requires_verification=True,
             )
@@ -921,7 +921,7 @@ async def register_email_standalone(
     # Для обычного email - требуется верификация (если включена)
     verification_required = not is_test_email and settings.is_cabinet_email_verification_enabled()
     return RegisterResponse(
-        message='Verification email sent. Please check your inbox.',
+        message='Verification code sent. Please check your inbox.',
         email=normalized_email,
         requires_verification=verification_required,
     )
@@ -1031,7 +1031,7 @@ async def resend_verification_standalone(
     result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     user = result.scalar_one_or_none()
     if user is None or not _is_recoverable_unverified_email_account(user):
-        return {'message': 'If this email is awaiting verification, a new link has been sent.'}
+        return {'message': 'If this email is awaiting verification, a new code has been sent.'}
 
     verification_token = generate_verification_code()
     user.email_verification_token = verification_token
@@ -1047,7 +1047,7 @@ async def resend_verification_standalone(
         )
 
     logger.info('Standalone verification email resent', user_id=user.id)
-    return {'message': 'If this email is awaiting verification, a new link has been sent.'}
+    return {'message': 'If this email is awaiting verification, a new code has been sent.'}
 
 
 @router.post('/email/resend')
