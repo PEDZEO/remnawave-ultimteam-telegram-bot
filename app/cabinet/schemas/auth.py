@@ -42,6 +42,7 @@ class EmailVerifyRequest(BaseModel):
     """Request to verify email with token."""
 
     token: str = Field(..., description='Email verification token')
+    email: EmailStr | None = Field(None, description='Email address for manual verification codes')
     campaign_slug: str | None = Field(
         None, min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9_-]+$', description='Campaign slug from web link'
     )

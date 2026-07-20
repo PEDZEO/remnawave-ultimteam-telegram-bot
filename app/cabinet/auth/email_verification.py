@@ -37,6 +37,11 @@ def generate_verification_token() -> str:
     return secrets.token_hex(32)
 
 
+def generate_verification_code() -> str:
+    """Generate a six-digit code suitable for manual email verification."""
+    return f'{secrets.randbelow(1_000_000):06d}'
+
+
 def generate_password_reset_token() -> str:
     """
     Generate a secure random password reset token.

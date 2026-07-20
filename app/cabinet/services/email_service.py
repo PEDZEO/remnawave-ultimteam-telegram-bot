@@ -156,6 +156,32 @@ class EmailService:
         Returns:
             True if email was sent successfully, False otherwise
         """
+        is_manual_code = len(verification_token) == 6 and verification_token.isdigit()
+        if is_manual_code:
+            code_texts = {
+                'ru': {
+                    'subject': 'Код подтверждения Ultimteam',
+                    'intro': 'Введите этот код в кабинете, чтобы подтвердить email:',
+                    'expires': 'Код действует ограниченное время. Никому его не сообщайте.',
+                },
+                'en': {
+                    'subject': 'Your Ultimteam verification code',
+                    'intro': 'Enter this code in the account portal to verify your email:',
+                    'expires': 'This code expires soon. Do not share it with anyone.',
+                },
+            }
+            code_text = code_texts.get(language, code_texts['en'])
+            body_text = f"{code_text['intro']}\n\n{verification_token}\n\n{code_text['expires']}"
+            body_html = (
+                '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">'
+                f'<p>{code_text["intro"]}</p>'
+                '<p style="font-size:32px;font-weight:700;letter-spacing:8px;margin:24px 0">'
+                f'{verification_token}</p>'
+                f'<p style="color:#667085;font-size:13px">{code_text["expires"]}</p>'
+                '</div>'
+            )
+            return self.send_email(to_email, code_text['subject'], body_html, body_text)
+
         if custom_subject and custom_body_html:
             return self.send_email(to_email, custom_subject, custom_body_html)
 

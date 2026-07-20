@@ -47,6 +47,7 @@ from ..auth import (
 from ..auth.email_verification import (
     generate_email_change_code,
     generate_password_reset_token,
+    generate_verification_code,
     generate_verification_token,
     get_email_change_expires_at,
     get_password_reset_expires_at,
@@ -812,7 +813,7 @@ async def register_email_standalone(
             existing_user
         ) and settings.is_cabinet_email_verification_enabled()
         if can_resend:
-            verification_token = generate_verification_token()
+            verification_token = generate_verification_code()
             existing_user.email_verification_token = verification_token
             existing_user.email_verification_expires = get_verification_expires_at()
             await db.commit()
@@ -883,7 +884,7 @@ async def register_email_standalone(
         logger.info('Email auto-verified (test or verification disabled)', email=request.email, user_id=user.id)
     else:
         # Сгенерировать токен верификации
-        verification_token = generate_verification_token()
+        verification_token = generate_verification_code()
         verification_expires = get_verification_expires_at()
 
         user.email_verification_token = verification_token
@@ -929,11 +930,25 @@ async def register_email_standalone(
 @router.post('/email/verify', response_model=AuthResponse)
 async def verify_email(
     request: EmailVerifyRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Verify email with token and return auth tokens."""
+    normalized_email = request.email.lower() if request.email else None
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='email_verify',
+        identifier=normalized_email or hashlib.sha256(request.token.encode()).hexdigest(),
+        identifier_limit=10,
+        ip_limit=30,
+        window=900,
+    )
+
     # Find user with this token
-    result = await db.execute(select(User).where(User.email_verification_token == request.token))
+    query = select(User).where(User.email_verification_token == request.token)
+    if normalized_email:
+        query = query.where(func.lower(User.email) == normalized_email)
+    result = await db.execute(query)
     user = result.scalar_one_or_none()
 
     if not user:
@@ -1018,7 +1033,7 @@ async def resend_verification_standalone(
     if user is None or not _is_recoverable_unverified_email_account(user):
         return {'message': 'If this email is awaiting verification, a new link has been sent.'}
 
-    verification_token = generate_verification_token()
+    verification_token = generate_verification_code()
     user.email_verification_token = verification_token
     user.email_verification_expires = get_verification_expires_at()
     await db.commit()

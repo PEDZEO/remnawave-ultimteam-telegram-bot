@@ -49,3 +49,22 @@ def test_non_spam_smtp_error_is_not_retried() -> None:
 
     assert sent is False
     service._send_message.assert_called_once()
+
+
+def test_verification_code_email_contains_no_link() -> None:
+    service = _email_service()
+    service.send_email = Mock(return_value=True)
+
+    sent = service.send_verification_email(
+        'user@example.com',
+        '123456',
+        'https://example.com/verify',
+        language='ru',
+    )
+
+    assert sent is True
+    _, _, body_html, body_text = service.send_email.call_args.args
+    assert '123456' in body_html
+    assert '123456' in body_text
+    assert 'https://' not in body_html
+    assert 'https://' not in body_text

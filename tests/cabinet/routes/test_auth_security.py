@@ -127,7 +127,7 @@ async def test_existing_unverified_registration_resends_verification(
         'is_cabinet_email_verification_enabled',
         Mock(return_value=True),
     )
-    monkeypatch.setattr(auth_routes, 'generate_verification_token', Mock(return_value='new-token'))
+    monkeypatch.setattr(auth_routes, 'generate_verification_code', Mock(return_value='123456'))
     monkeypatch.setattr(
         auth_routes,
         'get_verification_expires_at',
@@ -144,7 +144,7 @@ async def test_existing_unverified_registration_resends_verification(
 
     assert response.requires_verification is True
     assert response.email == 'user@example.com'
-    assert user.email_verification_token == 'new-token'
+    assert user.email_verification_token == '123456'
     db.commit.assert_awaited_once()
     send_verification.assert_awaited_once()
     create_user.assert_not_awaited()
@@ -177,7 +177,7 @@ async def test_public_resend_rotates_token_for_unverified_account(
         Mock(return_value=True),
     )
     monkeypatch.setattr(auth_routes.email_service, 'is_configured', Mock(return_value=True))
-    monkeypatch.setattr(auth_routes, 'generate_verification_token', Mock(return_value='new-token'))
+    monkeypatch.setattr(auth_routes, 'generate_verification_code', Mock(return_value='123456'))
     monkeypatch.setattr(
         auth_routes,
         'get_verification_expires_at',
@@ -192,9 +192,9 @@ async def test_public_resend_rotates_token_for_unverified_account(
     )
 
     assert response['message'].startswith('If this email')
-    assert user.email_verification_token == 'new-token'
+    assert user.email_verification_token == '123456'
     db.commit.assert_awaited_once()
-    send_verification.assert_awaited_once_with(db, user, 'new-token', email='user@example.com')
+    send_verification.assert_awaited_once_with(db, user, '123456', email='user@example.com')
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,13 @@ async def test_verify_email_reactivates_recoverable_deleted_account(monkeypatch:
     monkeypatch.setattr(auth_routes, '_store_refresh_token', AsyncMock())
     monkeypatch.setattr(auth_routes, '_process_campaign_bonus', AsyncMock(return_value=None))
 
-    response = await auth_routes.verify_email(EmailVerifyRequest(token='valid-token'), db)
+    monkeypatch.setattr(auth_routes, '_enforce_auth_rate_limit', AsyncMock())
+
+    response = await auth_routes.verify_email(
+        EmailVerifyRequest(token='valid-token'),
+        SimpleNamespace(client=SimpleNamespace(host='203.0.113.10')),
+        db,
+    )
 
     assert response is auth_response
     assert user.status == 'active'
