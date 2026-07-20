@@ -7,7 +7,7 @@ from ipaddress import ip_address, ip_network
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +64,7 @@ from ..schemas.auth import (
     EmailLoginRequest,
     EmailRegisterRequest,
     EmailRegisterStandaloneRequest,
+    EmailResendStandaloneRequest,
     EmailVerifyRequest,
     PasswordForgotRequest,
     PasswordResetRequest,
@@ -81,6 +82,50 @@ from ..services.email_template_overrides import get_rendered_override
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/auth', tags=['Cabinet Auth'])
+
+
+async def _send_verification_email(
+    db: AsyncSession,
+    user: User,
+    verification_token: str,
+    *,
+    email: str | None = None,
+    language: str | None = None,
+) -> bool:
+    """Render and send a verification email, returning the real delivery result."""
+    if not settings.is_cabinet_email_verification_enabled() or not email_service.is_configured():
+        return False
+
+    recipient = email or user.email
+    if not recipient:
+        return False
+
+    verification_url = f'{settings.CABINET_URL}/verify-email'
+    lang = language or user.language or 'ru'
+    full_url = f'{verification_url}?token={verification_token}'
+    expire_hours = settings.get_cabinet_email_verification_expire_hours()
+    override = await get_rendered_override(
+        'email_verification',
+        lang,
+        context={
+            'username': user.first_name or 'User',
+            'verification_url': full_url,
+            'expire_hours': str(expire_hours),
+        },
+        db=db,
+    )
+    custom_subject, custom_body = override or (None, None)
+
+    return await asyncio.to_thread(
+        email_service.send_verification_email,
+        to_email=recipient,
+        verification_token=verification_token,
+        verification_url=verification_url,
+        username=user.first_name or 'User',
+        language=lang,
+        custom_subject=custom_subject,
+        custom_body_html=custom_body,
+    )
 
 
 _TRUSTED_PROXY_NETWORKS = (
@@ -749,8 +794,42 @@ async def register_email_standalone(
         )
 
     # Проверить что email не занят
-    existing = await db.execute(select(User).where(User.email == request.email))
-    if existing.scalar_one_or_none():
+    normalized_email = request.email.lower()
+    existing = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
+    existing_user = existing.scalar_one_or_none()
+    if existing_user:
+        can_resend = (
+            not existing_user.email_verified
+            and bool(existing_user.password_hash)
+            and existing_user.status == 'active'
+            and settings.is_cabinet_email_verification_enabled()
+        )
+        if can_resend:
+            verification_token = generate_verification_token()
+            existing_user.email_verification_token = verification_token
+            existing_user.email_verification_expires = get_verification_expires_at()
+            await db.commit()
+
+            sent = await _send_verification_email(
+                db,
+                existing_user,
+                verification_token,
+                email=normalized_email,
+                language=request.language,
+            )
+            if not sent:
+                logger.error('Failed to resend verification email during registration', user_id=existing_user.id)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail='Verification email could not be sent. Please try again.',
+                )
+
+            return RegisterResponse(
+                message='Verification email resent. Please check your inbox.',
+                email=normalized_email,
+                requires_verification=True,
+            )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='This email is already registered',
@@ -782,7 +861,7 @@ async def register_email_standalone(
     # Создать пользователя
     user = await create_user_by_email(
         db=db,
-        email=request.email,
+        email=normalized_email,
         password_hash=password_hash,
         first_name=request.first_name,
         language=request.language,
@@ -805,34 +884,18 @@ async def register_email_standalone(
         await db.commit()
 
         # Отправить email верификации
-        if settings.is_cabinet_email_verification_enabled() and email_service.is_configured():
-            cabinet_url = settings.CABINET_URL
-            verification_url = f'{cabinet_url}/verify-email'
-            lang = user.language or request.language or 'ru'
-            full_url = f'{verification_url}?token={verification_token}'
-            expire_hours = settings.get_cabinet_email_verification_expire_hours()
-
-            override = await get_rendered_override(
-                'email_verification',
-                lang,
-                context={
-                    'username': user.first_name or 'User',
-                    'verification_url': full_url,
-                    'expire_hours': str(expire_hours),
-                },
-                db=db,
-            )
-            custom_subject, custom_body = override or (None, None)
-
-            await asyncio.to_thread(
-                email_service.send_verification_email,
-                to_email=request.email,
-                verification_token=verification_token,
-                verification_url=verification_url,
-                username=user.first_name or 'User',
-                language=lang,
-                custom_subject=custom_subject,
-                custom_body_html=custom_body,
+        sent = await _send_verification_email(
+            db,
+            user,
+            verification_token,
+            email=normalized_email,
+            language=request.language,
+        )
+        if not sent:
+            logger.error('Failed to send verification email after registration', user_id=user.id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Verification email could not be sent. Please use resend.',
             )
 
     # Обработать реферальную регистрацию (если есть реферер)
@@ -851,7 +914,7 @@ async def register_email_standalone(
     verification_required = not is_test_email and settings.is_cabinet_email_verification_enabled()
     return RegisterResponse(
         message='Verification email sent. Please check your inbox.',
-        email=request.email,
+        email=normalized_email,
         requires_verification=verification_required,
     )
 
@@ -902,6 +965,56 @@ async def verify_email(
     return response
 
 
+@router.post('/email/resend/standalone')
+async def resend_verification_standalone(
+    request: EmailResendStandaloneRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Resend verification for a standalone email account without requiring login."""
+    normalized_email = request.email.lower()
+    await _enforce_auth_rate_limit(
+        http_request,
+        action='email_resend_standalone',
+        identifier=normalized_email,
+        identifier_limit=5,
+        ip_limit=20,
+        window=3600,
+    )
+
+    if not settings.is_cabinet_email_verification_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Email verification is disabled',
+        )
+    if not email_service.is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Email service is not configured',
+        )
+
+    result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
+    user = result.scalar_one_or_none()
+    if user is None or user.email_verified or not user.password_hash or user.status != 'active':
+        return {'message': 'If this email is awaiting verification, a new link has been sent.'}
+
+    verification_token = generate_verification_token()
+    user.email_verification_token = verification_token
+    user.email_verification_expires = get_verification_expires_at()
+    await db.commit()
+
+    sent = await _send_verification_email(db, user, verification_token, email=normalized_email)
+    if not sent:
+        logger.error('Failed to resend standalone verification email', user_id=user.id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Verification email could not be sent. Please try again.',
+        )
+
+    logger.info('Standalone verification email resent', user_id=user.id)
+    return {'message': 'If this email is awaiting verification, a new link has been sent.'}
+
+
 @router.post('/email/resend')
 async def resend_verification(
     user: User = Depends(get_current_cabinet_user),
@@ -919,6 +1032,16 @@ async def resend_verification(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Email is already verified',
         )
+    if not settings.is_cabinet_email_verification_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Email verification is disabled',
+        )
+    if not email_service.is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Email service is not configured',
+        )
 
     # Generate new token
     verification_token = generate_verification_token()
@@ -929,45 +1052,12 @@ async def resend_verification(
 
     await db.commit()
 
-    # Send verification email asynchronously (smtplib is blocking)
-    if settings.is_cabinet_email_verification_enabled() and email_service.is_configured():
-        cabinet_url = settings.CABINET_URL
-        verification_url = f'{cabinet_url}/verify-email'
-        lang = user.language or 'ru'
-        full_url = f'{verification_url}?token={verification_token}'
-        expire_hours = settings.get_cabinet_email_verification_expire_hours()
-
-        override = await get_rendered_override(
-            'email_verification',
-            lang,
-            context={
-                'username': user.first_name or '',
-                'verification_url': full_url,
-                'expire_hours': str(expire_hours),
-            },
-            db=db,
-        )
-        custom_subject, custom_body = override or (None, None)
-
-        await asyncio.to_thread(
-            email_service.send_verification_email,
-            to_email=user.email,
-            verification_token=verification_token,
-            verification_url=verification_url,
-            username=user.first_name,
-            language=lang,
-            custom_subject=custom_subject,
-            custom_body_html=custom_body,
-        )
-    elif not settings.is_cabinet_email_verification_enabled():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Email verification is disabled',
-        )
-    elif not email_service.is_configured():
+    sent = await _send_verification_email(db, user, verification_token)
+    if not sent:
+        logger.error('Failed to resend verification email', user_id=user.id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Email service is not configured',
+            detail='Verification email could not be sent. Please try again.',
         )
 
     return {'message': 'Verification email sent'}

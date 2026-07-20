@@ -47,6 +47,12 @@ class EmailVerifyRequest(BaseModel):
     )
 
 
+class EmailResendStandaloneRequest(BaseModel):
+    """Request a new verification email without an authenticated session."""
+
+    email: EmailStr = Field(..., description='Email address')
+
+
 class EmailLoginRequest(BaseModel):
     """Request to login with email and password."""
 
