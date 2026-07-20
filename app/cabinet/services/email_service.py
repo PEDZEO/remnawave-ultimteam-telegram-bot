@@ -3,6 +3,7 @@
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 
 import structlog
 
@@ -47,6 +48,24 @@ class EmailService:
 
         return smtp
 
+    def _set_message_headers(self, message, *, to_email: str, subject: str) -> None:
+        message['Subject'] = subject
+        message['From'] = f'{self.from_name} <{self.from_email}>'
+        message['To'] = to_email
+        message['Date'] = formatdate(localtime=False)
+        sender_domain = self.from_email.rpartition('@')[2] or None
+        message['Message-ID'] = make_msgid(domain=sender_domain)
+        message['Auto-Submitted'] = 'auto-generated'
+
+    def _send_message(self, to_email: str, message) -> None:
+        with self._get_smtp_connection() as smtp:
+            smtp.sendmail(self.from_email, to_email, message.as_string())
+
+    @staticmethod
+    def _is_spam_rejection(error: smtplib.SMTPDataError) -> bool:
+        response = error.smtp_error.decode(errors='ignore') if isinstance(error.smtp_error, bytes) else str(error.smtp_error)
+        return error.smtp_code == 554 and 'spam' in response.lower()
+
     def send_email(
         self,
         to_email: str,
@@ -71,11 +90,6 @@ class EmailService:
             return False
 
         try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f'{self.from_name} <{self.from_email}>'
-            msg['To'] = to_email
-
             # Plain text version
             if body_text is None:
                 # Simple HTML to text conversion
@@ -87,14 +101,28 @@ class EmailService:
                 body_text = body_text.replace('&lt;', '<')
                 body_text = body_text.replace('&gt;', '>')
 
+            msg = MIMEMultipart('alternative')
+            self._set_message_headers(msg, to_email=to_email, subject=subject)
             part1 = MIMEText(body_text, 'plain', 'utf-8')
             part2 = MIMEText(body_html, 'html', 'utf-8')
 
             msg.attach(part1)
             msg.attach(part2)
 
-            with self._get_smtp_connection() as smtp:
-                smtp.sendmail(self.from_email, to_email, msg.as_string())
+            try:
+                self._send_message(to_email, msg)
+            except smtplib.SMTPDataError as error:
+                if not self._is_spam_rejection(error):
+                    raise
+
+                logger.warning(
+                    'Rich email rejected as spam; retrying once as plain text',
+                    to_email=to_email,
+                    smtp_code=error.smtp_code,
+                )
+                plain_message = MIMEText(body_text, 'plain', 'utf-8')
+                self._set_message_headers(plain_message, to_email=to_email, subject=subject)
+                self._send_message(to_email, plain_message)
 
             logger.info('Email sent successfully to', to_email=to_email)
             return True
