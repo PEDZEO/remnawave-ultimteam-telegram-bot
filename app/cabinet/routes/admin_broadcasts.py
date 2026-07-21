@@ -26,6 +26,7 @@ from ..schemas.broadcasts import (
     BroadcastFilter,
     BroadcastFiltersResponse,
     BroadcastListResponse,
+    BroadcastMediaRequest,
     BroadcastPreviewRequest,
     BroadcastPreviewResponse,
     BroadcastResponse,
@@ -43,6 +44,8 @@ from ..schemas.broadcasts import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/admin/broadcasts', tags=['Cabinet Admin Broadcasts'])
+
+TELEGRAM_CAPTION_MAX_LENGTH = 1024
 
 
 # ============ Filter Labels ============
@@ -242,6 +245,19 @@ def _validate_buttons(buttons: list[str]) -> bool:
     return all(button in BROADCAST_BUTTONS for button in buttons)
 
 
+def _validate_media_caption(media_payload: BroadcastMediaRequest | None, message_text: str) -> None:
+    """Reject broadcasts that Telegram cannot deliver as a media caption."""
+    if media_payload is None:
+        return
+
+    caption = media_payload.caption or message_text
+    if len(caption) > TELEGRAM_CAPTION_MAX_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Media caption must not exceed {TELEGRAM_CAPTION_MAX_LENGTH} characters',
+        )
+
+
 # ============ Endpoints ============
 
 
@@ -410,6 +426,7 @@ async def create_broadcast(
         )
 
     media_payload = request.media
+    _validate_media_caption(media_payload, message_text)
 
     # Create broadcast record
     broadcast = BroadcastHistory(
@@ -603,6 +620,8 @@ async def create_combined_broadcast(
             )
 
     media_payload = request.media
+    if request.channel in ('telegram', 'both'):
+        _validate_media_caption(media_payload, request.message_text.strip())
 
     # Create broadcast record
     broadcast = BroadcastHistory(

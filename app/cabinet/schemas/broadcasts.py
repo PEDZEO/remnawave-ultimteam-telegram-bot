@@ -83,7 +83,7 @@ class BroadcastMediaRequest(BaseModel):
 
     type: str = Field(..., pattern=r'^(photo|video|document)$')
     file_id: str
-    caption: str | None = None
+    caption: str | None = Field(default=None, max_length=1024)
 
 
 # ============ Create ============
