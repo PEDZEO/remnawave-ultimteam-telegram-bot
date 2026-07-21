@@ -1,5 +1,54 @@
 # Changelog
 
+## [3.27.0](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/compare/v3.26.2...v3.27.0) (2026-07-21)
+
+
+### New Features
+
+* add crypto link delivery toggle ([416e301](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/416e30119c4d7d42052123f9f48b988af59a9833))
+* add current crypto links for vpn clients ([4d01d7d](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/4d01d7d2190279b096c882811332019c55e76d6a))
+* add traffic bonus for extra devices ([d126f5b](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d126f5ba88db4df4ec83b4017cddf96549cee956))
+* **admin:** add current user traffic overview ([d9c011b](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d9c011be3ec850090c76a83536c64269f6fa6c05))
+* configure per-node traffic multipliers ([1c973c2](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/1c973c2db32302e803b62724a611340ee5c09204))
+* deliver user notifications by email ([519eb81](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/519eb8116feea71267b349ebc459f92aa92e8a13))
+* email transactional user notifications ([692e5c8](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/692e5c82b3fccad92255116ee2970ebb18f04d7c))
+* expose device traffic bonus in purchase options ([24c5f52](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/24c5f528397761de374a22ce28541f919c0b8ad8))
+* manage exhausted metered traffic users ([19494b9](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/19494b9b0dee6e7ae99cf4584126fdb6b4c4e04f))
+* manage split traffic topology from admin ([6b76e30](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/6b76e30f1ee1ded7bbaf47154cf9ebd69edd3747))
+* notify users before traffic runs out ([e742cd3](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/e742cd39f8950328c45ae2ef2d86e102b238b319))
+* scope special servers by tariff ([e1a1dc2](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/e1a1dc2ad790d5dd3e398d80b5c894b71c287e5b))
+* split metered traffic from unlimited nodes ([c6d8693](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/c6d86930d0256341a2e5186a797caadd9c80a9b3))
+* support multiple metered traffic squads ([e43adac](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/e43adac8944e82c1e60e8cce6d875babb10a6ca1))
+
+
+### Bug Fixes
+
+* **broadcasts:** validate and test media delivery ([006e147](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/006e147c467642b62d577edf20694b0099638fdf))
+* classify expected API and media errors ([cfc0472](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/cfc0472d67238538f633ca271097f412867d4a11))
+* describe standalone email codes accurately ([55db0f1](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/55db0f1552f0f203dffdd37d0599b02badd3f44d))
+* harden subscriptions and cabinet security ([17d267f](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/17d267f04cac655142bb19ae94e75bd3d1504750))
+* harden traffic limits and account sync ([a5a8af6](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/a5a8af6dfc76382020ff0fd785f37ba12f5927fe))
+* honor configured trial limits ([d8f17e5](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d8f17e5162b5f3a378cb740f21f743c32b200fe7))
+* keep metered squad out of customer pricing ([3efdca1](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/3efdca1ff97c434142359070c648fcff1462ff78))
+* keep websocket credentials out of URLs ([6ce9bbe](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/6ce9bbef0c7ebef87f65f4939bf5be460c9b95f1))
+* preserve unlimited panel traffic in Ultima ([d21a4fc](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d21a4fc02a82628005439dd0cc0e608083988f9d))
+* reconcile metered node multipliers ([b75afcc](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/b75afcc226996f48c2c1f5fdd74e4be2da616059))
+* recover oauth callbacks across browsers ([b51e3b6](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/b51e3b65f3509bbb85258c4bcde34158b20ddd98))
+* recover stale email registrations ([391cb72](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/391cb72744daa459a70d2fba98179c328aecad49))
+* recover unverified email registrations ([96ceaeb](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/96ceaebb03e7315db0a4778cb46b9a08fdf24bd3))
+* render notification emails correctly ([7304148](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/7304148fd7d2446fccc97da2fd0a56d4808bbcb3))
+* retry spam-rejected mail as plain text ([4fc4f61](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/4fc4f6112bacde3641b48fa9b5cacc07ff280e9e))
+* sync panel subscription after oauth login ([86f3c7e](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/86f3c7ea03c9637cf50fc18a94c8c2c044b53320))
+* verify email registrations with short codes ([06add78](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/06add7828f9bbdf6a2010ec5bd25e30da98024d0))
+
+
+### Performance
+
+* batch healthy metered traffic checks ([b8b3247](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/b8b3247a20710f40c7fa727534c98f0ec1d1c3c9))
+* remove panel sync n plus one queries ([d6590e2](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d6590e2d9028536f79f6ce6fb269c9fb0182eae1))
+* scale metered traffic monitor ([e3388da](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/e3388da2ce6624ead8462645a68c5af8c8c011c0))
+* unblock email verification login ([2b3d3bb](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/2b3d3bbc45316d3f93d6642a60d99fe55568b694))
+
 ## [3.25.1](https://github.com/PEDZEO/remnawave-bedolaga-telegram-bot/compare/v3.25.0...v3.25.1) (2026-05-27)
 
 
