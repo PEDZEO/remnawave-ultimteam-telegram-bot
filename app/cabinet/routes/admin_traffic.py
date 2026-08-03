@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database.models import Subscription, SubscriptionStatus, Tariff, Transaction, TransactionType, User
+from app.external.remnawave_api import RemnaWaveAPIError
 from app.services.metered_traffic_policy import get_metered_warning_percent
 from app.services.remnawave_service import RemnaWaveService
 
@@ -266,19 +267,48 @@ async def _aggregate_traffic(
                 _traffic_cache[cache_key] = (now, {}, [])
                 return {}, []
 
-            # Fetch per-node user stats — O(nodes) calls instead of O(users)
-            semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
+            if not nodes:
+                _traffic_cache[cache_key] = (now, {}, [])
+                return {}, []
 
-            async def fetch_node_users(node):
-                async with semaphore:
-                    try:
-                        stats = await api.get_bandwidth_stats_node_users_legacy(node.uuid, start_str, end_str)
-                        return node.uuid, stats
-                    except Exception:
-                        logger.warning('Failed to get traffic for node', node_name=node.name, exc_info=True)
-                        return node.uuid, None
+            # Remnawave 3.x supports one bulk call; 2.x falls back to per-node requests.
+            try:
+                usage = await api.get_bandwidth_stats_nodes_usage(
+                    [node.uuid for node in nodes],
+                    start_str,
+                    end_str,
+                )
+                results = [
+                    (
+                        node.get('uuid', ''),
+                        [
+                            {
+                                'userUuid': str(entry['id']),
+                                'nodeUuid': node.get('uuid', ''),
+                                'total': entry.get('totalBytes', 0),
+                            }
+                            for entry in node.get('users', [])
+                            if entry.get('id') is not None
+                        ],
+                    )
+                    for node in usage.get('nodes', [])
+                ]
+            except RemnaWaveAPIError as error:
+                if error.status_code not in (404, 405):
+                    raise
 
-            results = await asyncio.gather(*(fetch_node_users(n) for n in nodes))
+                semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
+
+                async def fetch_node_users(node):
+                    async with semaphore:
+                        try:
+                            stats = await api.get_bandwidth_stats_node_users_legacy(node.uuid, start_str, end_str)
+                            return node.uuid, stats
+                        except Exception:
+                            logger.warning('Failed to get traffic for node', node_name=node.name, exc_info=True)
+                            return node.uuid, None
+
+                results = await asyncio.gather(*(fetch_node_users(n) for n in nodes))
 
         nodes_info: list[TrafficNodeInfo] = [
             TrafficNodeInfo(node_uuid=node.uuid, node_name=node.name, country_code=node.country_code) for node in nodes
@@ -697,22 +727,11 @@ async def _build_enrichment(db: AsyncSession, user_map: dict[str, User]) -> dict
                 node_uuid_to_name[node.uuid] = node.name
 
             # Fetch all panel users (paginated) for last connected node
-            panel_users = []
             try:
-                first_page = await api.get_all_users(start=0, size=500)
-                panel_users.extend(first_page['users'])
-                total_panel = first_page['total']
-
-                if total_panel > 500:
-                    remaining_tasks = [
-                        api.get_all_users(start=offset, size=500) for offset in range(500, total_panel, 500)
-                    ]
-                    pages = await asyncio.gather(*remaining_tasks, return_exceptions=True)
-                    for page in pages:
-                        if isinstance(page, dict):
-                            panel_users.extend(page['users'])
+                panel_users = await api.get_all_users_complete(page_size=500)
             except Exception:
                 logger.warning('Failed to fetch panel users for enrichment', exc_info=True)
+                panel_users = []
 
             for pu in panel_users:
                 uid = uuid_to_user_id.get(pu.uuid)

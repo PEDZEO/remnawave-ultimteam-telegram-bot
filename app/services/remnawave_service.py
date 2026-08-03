@@ -31,6 +31,7 @@ from app.database.models import (
 from app.external.remnawave_api import (
     RemnaWaveAPI,
     RemnaWaveAPIError,
+    RemnaWaveUser,
     TrafficLimitStrategy,
     UserStatus,
 )
@@ -245,6 +246,116 @@ class RemnaWaveService:
         api = RemnaWaveAPI(**self._api_kwargs)
         async with api:
             yield api
+
+    async def reconcile_user_identifiers(self, db: AsyncSession) -> dict[str, int]:
+        """Replace removed Remnawave 2.x user UUIDs with 3.x numeric IDs."""
+        stats = {'checked': 0, 'migrated': 0, 'unresolved': 0, 'conflicts': 0}
+        if not self.is_configured:
+            return stats
+
+        legacy_result = await db.execute(
+            select(User)
+            .where(
+                User.remnawave_uuid.isnot(None),
+                User.remnawave_uuid.contains('-'),
+            )
+            .options(selectinload(User.subscription))
+        )
+        legacy_users = legacy_result.scalars().unique().all()
+        stats['checked'] = len(legacy_users)
+        if not legacy_users:
+            return stats
+
+        assigned_result = await db.execute(
+            select(User.id, User.remnawave_uuid).where(
+                User.remnawave_uuid.isnot(None),
+                ~User.remnawave_uuid.contains('-'),
+            )
+        )
+        assigned_identifiers = {
+            identifier: user_id
+            for user_id, identifier in assigned_result.all()
+            if identifier and identifier.isdigit()
+        }
+
+        target_short_uuids = {
+            user.subscription.remnawave_short_uuid
+            for user in legacy_users
+            if user.subscription and user.subscription.remnawave_short_uuid
+        }
+        target_telegram_ids = {user.telegram_id for user in legacy_users if user.telegram_id is not None}
+        target_emails = {user.email.lower() for user in legacy_users if user.email}
+
+        by_short_uuid: dict[str, RemnaWaveUser | None] = {}
+        by_telegram_id: dict[int, RemnaWaveUser | None] = {}
+        by_email: dict[str, RemnaWaveUser | None] = {}
+
+        def add_unique_match(index: dict[Any, RemnaWaveUser | None], key: Any, panel_user: RemnaWaveUser) -> None:
+            if key in index:
+                index[key] = None
+            else:
+                index[key] = panel_user
+
+        loaded = 0
+        v3_identifiers_seen = 0
+        async with self.get_api_client() as api:
+            start = 0
+            page_size = 1000
+            while True:
+                page = await api.get_all_users(start=start, size=page_size)
+                users = page.get('users', [])
+                if start == 0 and users and not any(user.uuid.isdigit() for user in users):
+                    return stats
+
+                for panel_user in users:
+                    if not panel_user.uuid.isdigit():
+                        continue
+                    v3_identifiers_seen += 1
+                    if panel_user.short_uuid in target_short_uuids:
+                        add_unique_match(by_short_uuid, panel_user.short_uuid, panel_user)
+                    if panel_user.telegram_id in target_telegram_ids:
+                        add_unique_match(by_telegram_id, panel_user.telegram_id, panel_user)
+                    normalized_email = panel_user.email.lower() if panel_user.email else None
+                    if normalized_email in target_emails:
+                        add_unique_match(by_email, normalized_email, panel_user)
+
+                loaded += len(users)
+                if not users or loaded >= page.get('total', 0) or len(users) < page_size:
+                    break
+                start += len(users)
+
+        if not v3_identifiers_seen:
+            return stats
+        for user in legacy_users:
+            subscription = user.subscription
+            panel_user = None
+            if subscription and subscription.remnawave_short_uuid:
+                panel_user = by_short_uuid.get(subscription.remnawave_short_uuid)
+            if panel_user is None and user.telegram_id is not None:
+                panel_user = by_telegram_id.get(user.telegram_id)
+            if panel_user is None and user.email:
+                panel_user = by_email.get(user.email.lower())
+
+            if panel_user is None:
+                stats['unresolved'] += 1
+                continue
+
+            conflicting_user_id = assigned_identifiers.get(panel_user.uuid)
+            if conflicting_user_id is not None and conflicting_user_id != user.id:
+                stats['conflicts'] += 1
+                continue
+
+            user.remnawave_uuid = panel_user.uuid
+            if subscription and not subscription.remnawave_short_uuid:
+                subscription.remnawave_short_uuid = panel_user.short_uuid
+            assigned_identifiers[panel_user.uuid] = user.id
+            stats['migrated'] += 1
+
+        if stats['migrated']:
+            await db.commit()
+            logger.info('Remnawave 3.x user identifiers reconciled', **stats)
+
+        return stats
 
     def _now_utc(self) -> datetime:
         """Возвращает текущее время в UTC без привязки к часовому поясу."""
@@ -2277,8 +2388,7 @@ class RemnaWaveService:
     async def add_all_users_to_squad(self, squad_uuid: str) -> bool:
         try:
             async with self.get_api_client() as api:
-                response = await api._make_request('POST', f'/api/internal-squads/{squad_uuid}/bulk-actions/add-users')
-                return response.get('response', {}).get('eventSent', False)
+                return await api.add_users_to_internal_squad(squad_uuid)
         except Exception as e:
             logger.error('Error adding users to squad', error=e)
             return False
@@ -2286,10 +2396,7 @@ class RemnaWaveService:
     async def remove_all_users_from_squad(self, squad_uuid: str) -> bool:
         try:
             async with self.get_api_client() as api:
-                response = await api._make_request(
-                    'DELETE', f'/api/internal-squads/{squad_uuid}/bulk-actions/remove-users'
-                )
-                return response.get('response', {}).get('eventSent', False)
+                return await api.remove_users_from_internal_squad(squad_uuid)
         except Exception as e:
             logger.error('Error removing users from squad', error=e)
             return False
@@ -2318,8 +2425,7 @@ class RemnaWaveService:
     async def rename_squad(self, squad_uuid: str, new_name: str) -> bool:
         try:
             async with self.get_api_client() as api:
-                data = {'uuid': squad_uuid, 'name': new_name}
-                await api._make_request('PATCH', '/api/internal-squads', data)
+                await api.update_internal_squad(squad_uuid, name=new_name)
                 return True
         except Exception as e:
             logger.error('Error renaming squad', error=e)
@@ -2330,14 +2436,8 @@ class RemnaWaveService:
             async with self.get_api_client() as api:
                 start_str = start_date.isoformat().replace('+00:00', 'Z')
                 end_str = end_date.isoformat().replace('+00:00', 'Z')
-
-                params = {'start': start_str, 'end': end_str}
-
-                usage_data = await api._make_request(
-                    'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users/legacy', params=params
-                )
-
-                return usage_data.get('response', [])
+                usage_data = await api.get_bandwidth_stats_node_users_legacy(node_uuid, start_str, end_str)
+                return usage_data if isinstance(usage_data, list) else []
 
         except Exception as e:
             logger.error('Ошибка получения статистики использования ноды', node_uuid=node_uuid, error=e)
@@ -2506,12 +2606,11 @@ class RemnaWaveService:
             logger.info('🧹 Начинаем усиленную очистку неактуальных подписок...')
 
             async with self.get_api_client() as api:
-                panel_users_data = await api._make_request('GET', '/api/users')
-                panel_users = panel_users_data['response']['users']
+                panel_users = await api.get_all_users_complete()
 
             panel_telegram_ids = set()
             for panel_user in panel_users:
-                telegram_id = panel_user.get('telegramId')
+                telegram_id = panel_user.telegram_id
                 if telegram_id:
                     panel_telegram_ids.add(telegram_id)
 
@@ -2582,8 +2681,35 @@ class RemnaWaveService:
             logger.info('🔄 Начинаем синхронизацию статусов подписок...')
 
             async with self.get_api_client() as api:
-                panel_users_data = await api._make_request('GET', '/api/users')
-                panel_users = panel_users_data['response']['users']
+                parsed_panel_users = await api.get_all_users_complete()
+
+            panel_users = [
+                {
+                    'uuid': panel_user.uuid,
+                    'shortUuid': panel_user.short_uuid,
+                    'telegramId': panel_user.telegram_id,
+                    'email': panel_user.email,
+                    'username': panel_user.username,
+                    'status': panel_user.status.value,
+                    'expireAt': panel_user.expire_at.isoformat(),
+                    'trafficLimitBytes': panel_user.traffic_limit_bytes,
+                    'trafficLimitStrategy': panel_user.traffic_limit_strategy.value,
+                    'hwidDeviceLimit': panel_user.hwid_device_limit,
+                    'description': panel_user.description,
+                    'tag': panel_user.tag,
+                    'subscriptionUrl': panel_user.subscription_url,
+                    'userTraffic': (
+                        {
+                            'usedTrafficBytes': panel_user.user_traffic.used_traffic_bytes,
+                            'lifetimeUsedTrafficBytes': panel_user.user_traffic.lifetime_used_traffic_bytes,
+                        }
+                        if panel_user.user_traffic
+                        else None
+                    ),
+                    'activeInternalSquads': panel_user.active_internal_squads,
+                }
+                for panel_user in parsed_panel_users
+            ]
 
             panel_users_dict = {}
             for panel_user in panel_users:

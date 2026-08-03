@@ -118,3 +118,68 @@ async def test_get_or_create_user_creates_new(monkeypatch):
         last_name=None,
         language='ru',
     )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_user_identifiers_migrates_v2_uuid_to_v3_id(monkeypatch):
+    service = _create_service()
+    service._config_error = None
+
+    subscription = SimpleNamespace(remnawave_short_uuid='short-42')
+    legacy_user = SimpleNamespace(
+        id=7,
+        telegram_id=12345,
+        email='user@example.com',
+        remnawave_uuid='11111111-1111-1111-1111-111111111111',
+        subscription=subscription,
+    )
+    panel_user = SimpleNamespace(
+        uuid='42',
+        short_uuid='short-42',
+        telegram_id=12345,
+        email='user@example.com',
+    )
+
+    class LegacyScalars:
+        def unique(self):
+            return self
+
+        def all(self):
+            return [legacy_user]
+
+    class LegacyResult:
+        def scalars(self):
+            return LegacyScalars()
+
+    class AssignedResult:
+        def all(self):
+            return []
+
+    db = SimpleNamespace(
+        execute=AsyncMock(side_effect=[LegacyResult(), AssignedResult()]),
+        commit=AsyncMock(),
+    )
+
+    class FakeApi:
+        async def get_all_users(self, start: int, size: int):
+            assert start == 0
+            assert size == 1000
+            return {'users': [panel_user], 'total': 1}
+
+    class FakeApiContext:
+        async def __aenter__(self):
+            return FakeApi()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    def fake_get_api_client():
+        return FakeApiContext()
+
+    monkeypatch.setattr(service, 'get_api_client', fake_get_api_client)
+
+    stats = await service.reconcile_user_identifiers(db)
+
+    assert stats == {'checked': 1, 'migrated': 1, 'unresolved': 0, 'conflicts': 0}
+    assert legacy_user.remnawave_uuid == '42'
+    db.commit.assert_awaited_once()

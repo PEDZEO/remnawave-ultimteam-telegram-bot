@@ -66,6 +66,69 @@ async def test_resolve_user_by_panel_user_id(monkeypatch: pytest.MonkeyPatch) ->
     assert resolved_subscription is subscription
 
 
+@pytest.mark.asyncio
+async def test_resolve_v3_webhook_by_numeric_id_updates_legacy_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    bot_user = SimpleNamespace(
+        id=7,
+        telegram_id=12345,
+        email='user@example.com',
+        remnawave_uuid='11111111-1111-1111-1111-111111111111',
+    )
+    subscription = SimpleNamespace(id=99)
+    panel_user = SimpleNamespace(uuid='42', telegram_id=12345, email='user@example.com')
+
+    async def fake_get_user_by_telegram_id(db: Any, telegram_id: int) -> Any:
+        return bot_user if telegram_id == 12345 else None
+
+    async def fake_get_user_by_remnawave_uuid(db: Any, uuid: str) -> Any:
+        return None
+
+    async def fake_get_user_by_email(db: Any, email: str) -> Any:
+        return bot_user if email == 'user@example.com' else None
+
+    async def fake_get_subscription_by_user_id(db: Any, user_id: int) -> Any:
+        return subscription if user_id == bot_user.id else None
+
+    class FakeRemnaWaveApi:
+        async def get_user_by_id(self, user_id: int) -> Any:
+            assert user_id == 42
+            return panel_user
+
+    class FakeApiContext:
+        async def __aenter__(self) -> FakeRemnaWaveApi:
+            return FakeRemnaWaveApi()
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> None:
+            return None
+
+    class FakeRemnaWaveService:
+        is_configured = True
+
+        def get_api_client(self) -> FakeApiContext:
+            return FakeApiContext()
+
+    monkeypatch.setattr(webhook_module, 'get_user_by_telegram_id', fake_get_user_by_telegram_id)
+    monkeypatch.setattr(webhook_module, 'get_user_by_remnawave_uuid', fake_get_user_by_remnawave_uuid)
+    monkeypatch.setattr(webhook_module, 'get_user_by_email', fake_get_user_by_email)
+    monkeypatch.setattr(webhook_module, 'get_subscription_by_user_id', fake_get_subscription_by_user_id)
+    monkeypatch.setattr('app.services.remnawave_service.RemnaWaveService', FakeRemnaWaveService)
+
+    service = RemnaWaveWebhookService(bot=SimpleNamespace())
+    resolved_user, resolved_subscription = await service._resolve_user_and_subscription(
+        SimpleNamespace(),
+        {'id': 42},
+    )
+
+    assert resolved_user is bot_user
+    assert resolved_subscription is subscription
+    assert bot_user.remnawave_uuid == '42'
+
+
 def test_build_traffic_warning_context_uses_current_remnawave_payload() -> None:
     context = RemnaWaveWebhookService._build_traffic_warning_context(
         {

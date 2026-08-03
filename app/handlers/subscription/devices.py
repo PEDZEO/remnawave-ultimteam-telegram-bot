@@ -651,10 +651,9 @@ async def execute_change_devices(callback: types.CallbackQuery, db_user: User, d
                                 device_hwid = device.get('hwid')
                                 if device_hwid:
                                     try:
-                                        delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
-                                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                                        devices_reset_count += 1
-                                        logger.info('✅ Удалено устройство', device_hwid=device_hwid)
+                                        if await api.remove_device(db_user.remnawave_uuid, device_hwid):
+                                            devices_reset_count += 1
+                                            logger.info('✅ Удалено устройство', device_hwid=device_hwid)
                                     except Exception as del_error:
                                         logger.error(
                                             'Ошибка удаления устройства', device_hwid=device_hwid, del_error=del_error
@@ -905,9 +904,8 @@ async def handle_single_device_reset(callback: types.CallbackQuery, db_user: Use
                     device_hwid = device.get('hwid')
 
                     if device_hwid:
-                        delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
-
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+                        if not await api.remove_device(db_user.remnawave_uuid, device_hwid):
+                            raise RuntimeError('Remnawave rejected device deletion')
 
                         platform = device.get('platform', 'Unknown')
                         device_model = device.get('deviceModel', 'Unknown')
@@ -1020,11 +1018,11 @@ async def handle_all_devices_reset_from_management(callback: types.CallbackQuery
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': db_user.remnawave_uuid, 'hwid': device_hwid}
-
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                        success_count += 1
-                        logger.info('✅ Устройство удалено', device_hwid=device_hwid)
+                        if await api.remove_device(db_user.remnawave_uuid, device_hwid):
+                            success_count += 1
+                            logger.info('✅ Устройство удалено', device_hwid=device_hwid)
+                        else:
+                            failed_count += 1
 
                     except Exception as device_error:
                         failed_count += 1

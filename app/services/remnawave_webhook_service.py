@@ -30,7 +30,12 @@ from app.database.crud.subscription import (
     reactivate_subscription,
     update_subscription_usage,
 )
-from app.database.crud.user import get_user_by_id, get_user_by_remnawave_uuid, get_user_by_telegram_id
+from app.database.crud.user import (
+    get_user_by_email,
+    get_user_by_id,
+    get_user_by_remnawave_uuid,
+    get_user_by_telegram_id,
+)
 from app.database.models import Subscription, SubscriptionServer, SubscriptionStatus, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
@@ -285,10 +290,9 @@ class RemnaWaveWebhookService:
     async def _resolve_user_and_subscription(
         self, db: AsyncSession, data: dict
     ) -> tuple[User | None, Subscription | None]:
-        """Find bot user by telegramId or uuid from webhook payload.
+        """Find bot user across Remnawave 2.x and 3.x webhook payloads.
 
-        Handles both user-scope events (top-level telegramId/uuid) and
-        device-scope events (userUuid, or nested user.telegramId/user.uuid).
+        Remnawave 3.x removed user uuid and exposes a numeric id instead.
         """
         user: User | None = None
 
@@ -304,7 +308,10 @@ class RemnaWaveWebhookService:
         if not user:
             uuid = data.get('uuid') or data.get('userUuid')
             if uuid:
-                user = await get_user_by_remnawave_uuid(db, uuid)
+                user = await get_user_by_remnawave_uuid(db, str(uuid))
+
+        if not user and data.get('email'):
+            user = await get_user_by_email(db, str(data['email']))
 
         # Try nested user object (e.g. user_hwid_devices events)
         if not user:
@@ -319,10 +326,12 @@ class RemnaWaveWebhookService:
                 if not user:
                     nested_uuid = nested_user.get('uuid')
                     if nested_uuid:
-                        user = await get_user_by_remnawave_uuid(db, nested_uuid)
+                        user = await get_user_by_remnawave_uuid(db, str(nested_uuid))
+                if not user and nested_user.get('email'):
+                    user = await get_user_by_email(db, str(nested_user['email']))
 
         if not user:
-            panel_user_id = data.get('userId')
+            panel_user_id = data.get('id') or data.get('userId')
             nested_user = data.get('user')
             if panel_user_id is None and isinstance(nested_user, dict):
                 panel_user_id = nested_user.get('id') or nested_user.get('userId')
@@ -336,6 +345,12 @@ class RemnaWaveWebhookService:
                             panel_user = await api.get_user_by_id(int(panel_user_id))
                         if panel_user:
                             user = await get_user_by_remnawave_uuid(db, panel_user.uuid)
+                            if not user and panel_user.telegram_id:
+                                user = await get_user_by_telegram_id(db, panel_user.telegram_id)
+                            if not user and panel_user.email:
+                                user = await get_user_by_email(db, panel_user.email)
+                            if user and user.remnawave_uuid != panel_user.uuid:
+                                user.remnawave_uuid = panel_user.uuid
                 except Exception as exc:
                     logger.warning(
                         'Failed to resolve RemnaWave webhook user by panel userId', user_id=panel_user_id, error=exc

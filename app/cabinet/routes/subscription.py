@@ -3291,8 +3291,8 @@ async def delete_device(
     try:
         service = RemnaWaveService()
         async with service.get_api_client() as api:
-            delete_data = {'userUuid': user.remnawave_uuid, 'hwid': hwid}
-            await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
+            if not await api.remove_device(user.remnawave_uuid, hwid):
+                raise RuntimeError('Remnawave rejected device deletion')
 
             return {
                 'success': True,
@@ -3356,9 +3356,8 @@ async def delete_all_devices(
                 device_hwid = device.get('hwid')
                 if device_hwid:
                     try:
-                        delete_data = {'userUuid': user.remnawave_uuid, 'hwid': device_hwid}
-                        await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                        deleted_count += 1
+                        if await api.remove_device(user.remnawave_uuid, device_hwid):
+                            deleted_count += 1
                     except Exception as device_error:
                         logger.error('Error deleting device', device_hwid=device_hwid, device_error=device_error)
 
@@ -3550,10 +3549,9 @@ async def reduce_devices(
                             device_hwid = device.get('hwid')
                             if device_hwid:
                                 try:
-                                    delete_data = {'userUuid': user.remnawave_uuid, 'hwid': device_hwid}
-                                    await api._make_request('POST', '/api/hwid/devices/delete', data=delete_data)
-                                    devices_removed_count += 1
-                                    logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
+                                    if await api.remove_device(user.remnawave_uuid, device_hwid):
+                                        devices_removed_count += 1
+                                        logger.info('Removed device for user', device_hwid=device_hwid, user_id=user.id)
                                 except Exception as del_error:
                                     logger.error('Error removing device', device_hwid=device_hwid, del_error=del_error)
         except Exception as e:
