@@ -220,3 +220,41 @@ async def remove_balancer_quarantine(
         f'/admin/quarantine/{quote(safe_name, safe="")}',
         requires_admin=True,
     )
+
+
+@router.get('/attack-mode')
+async def get_balancer_attack_mode(
+    admin: User = Depends(get_current_admin_user),
+) -> Any:
+    """Return nodes currently isolated by balancer protection."""
+    return await _proxy_balancer_json('GET', '/admin/attack-mode', requires_admin=True)
+
+
+@router.post('/attack-mode')
+async def enable_balancer_attack_mode(
+    payload: dict[str, Any],
+    admin: User = Depends(get_current_admin_user),
+) -> Any:
+    """Manually isolate one node for a bounded period."""
+    return await _proxy_balancer_json(
+        'POST',
+        '/admin/attack-mode',
+        requires_admin=True,
+        json_body=payload,
+    )
+
+
+@router.delete('/attack-mode/{node_name:path}')
+async def disable_balancer_attack_mode(
+    node_name: str,
+    admin: User = Depends(get_current_admin_user),
+) -> Any:
+    """Release one manually or automatically isolated node."""
+    safe_name = node_name.strip().lstrip('/')
+    if not safe_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Node name is required')
+    return await _proxy_balancer_json(
+        'DELETE',
+        f'/admin/attack-mode/{quote(safe_name, safe="")}',
+        requires_admin=True,
+    )
