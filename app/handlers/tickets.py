@@ -1,5 +1,6 @@
 import asyncio
 import time
+from html import escape
 
 import structlog
 from aiogram import Bot, Dispatcher, F, types
@@ -1025,9 +1026,17 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             user = await get_user_by_id(db, ticket.user_id)
         except Exception:
             user = None
-        full_name = user.full_name if user else 'Unknown'
-        telegram_id_display = (user.telegram_id or user.email or f'#{user.id}') if user else '—'
-        username_display = (user.username or 'отсутствует') if user else 'отсутствует'
+        full_name = user.full_name if user else (ticket.guest_name or 'Гость сайта')
+        telegram_id_display = (
+            user.telegram_id or user.email or f'#{user.id}'
+            if user
+            else (ticket.guest_contact or 'без контакта')
+        )
+        username_display = (user.username or 'отсутствует') if user else 'гость сайта'
+        full_name = escape(str(full_name))
+        telegram_id_display = escape(str(telegram_id_display))
+        username_display = escape(str(username_display))
+        title = escape(title)
 
         # Загружаем первое сообщение для получения медиа и превью текста
         first_message = await TicketMessageCRUD.get_first_message(db, ticket.id)
@@ -1039,7 +1048,7 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             media_type = first_message.media_type if first_message.has_media else None
             msg_text = (first_message.message_text or '').strip()
             if msg_text:
-                message_preview = msg_text[:200] + '...' if len(msg_text) > 200 else msg_text
+                message_preview = escape(msg_text[:200] + '...' if len(msg_text) > 200 else msg_text)
 
         notification_text = (
             f'🎫 <b>НОВЫЙ ТИКЕТ</b>\n\n'
@@ -1095,11 +1104,19 @@ async def notify_admins_about_ticket_reply(
             user = await get_user_by_id(db, ticket.user_id)
         except Exception:
             user = None
-        full_name = user.full_name if user else 'Unknown'
-        telegram_id_display = (user.telegram_id or user.email or f'#{user.id}') if user else '—'
-        username_display = (user.username or 'отсутствует') if user else 'отсутствует'
+        full_name = user.full_name if user else (ticket.guest_name or 'Гость сайта')
+        telegram_id_display = (
+            user.telegram_id or user.email or f'#{user.id}'
+            if user
+            else (ticket.guest_contact or 'без контакта')
+        )
+        username_display = (user.username or 'отсутствует') if user else 'гость сайта'
+        full_name = escape(str(full_name))
+        telegram_id_display = escape(str(telegram_id_display))
+        username_display = escape(str(username_display))
+        title = escape(title)
 
-        reply_preview = reply_text[:200] + '...' if len(reply_text) > 200 else reply_text
+        reply_preview = escape(reply_text[:200] + '...' if len(reply_text) > 200 else reply_text)
 
         notification_text = (
             f'💬 <b>ОТВЕТ НА ТИКЕТ</b>\n\n'

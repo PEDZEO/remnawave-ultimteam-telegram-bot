@@ -52,6 +52,22 @@ class TicketDetailResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GuestTicketCreateRequest(BaseModel):
+    """Anonymous support request."""
+
+    name: str = Field(..., min_length=2, max_length=120)
+    contact: str = Field('', max_length=255)
+    title: str = Field(..., min_length=3, max_length=255)
+    message: str = Field(..., min_length=10, max_length=4000)
+
+
+class GuestTicketCreateResponse(BaseModel):
+    """Ticket payload plus the one-time guest access credential."""
+
+    ticket: TicketDetailResponse
+    access_token: str
+
+
 class TicketListResponse(BaseModel):
     """Paginated ticket list."""
 

@@ -1749,7 +1749,7 @@ class User(Base):
     referrals = relationship(
         'User',
         backref='referrer',
-        remote_side=[id],  # noqa: A003 - SQLAlchemy relationship references the mapped id column.
+        remote_side=[id],
         foreign_keys='User.referred_by_id',
         post_update=True,
     )
@@ -3168,7 +3168,13 @@ class Ticket(Base):
     __tablename__ = 'tickets'
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
+
+    # Anonymous cabinet visitors use an opaque per-ticket token. Only its hash
+    # is persisted so a database leak cannot be used to read the conversation.
+    guest_name = Column(String(120), nullable=True)
+    guest_contact = Column(String(255), nullable=True)
+    guest_token_hash = Column(String(64), nullable=True, unique=True, index=True)
 
     title = Column(String(255), nullable=False)
     status = Column(String(20), default=TicketStatus.OPEN.value, nullable=False)
@@ -3235,7 +3241,7 @@ class TicketMessage(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False)
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
 
     message_text = Column(Text, nullable=False)
     is_from_admin = Column(Boolean, default=False, nullable=False)

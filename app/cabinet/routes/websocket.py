@@ -41,6 +41,7 @@ class CabinetConnectionManager:
         self._user_connections: dict[int, set[WebSocket]] = {}
         # admin user_ids -> set of websocket connections
         self._admin_connections: dict[int, set[WebSocket]] = {}
+        self._guest_connections: dict[int, set[WebSocket]] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket, user_id: int, is_admin: bool) -> None:
@@ -134,6 +135,35 @@ class CabinetConnectionManager:
                 for user_id, ws_set in disconnected_by_user.items():
                     for ws in ws_set:
                         self._admin_connections.get(user_id, set()).discard(ws)
+
+    async def connect_guest(self, websocket: WebSocket, ticket_id: int) -> None:
+        async with self._lock:
+            self._guest_connections.setdefault(ticket_id, set()).add(websocket)
+
+    async def disconnect_guest(self, websocket: WebSocket, ticket_id: int) -> None:
+        async with self._lock:
+            connections = self._guest_connections.get(ticket_id)
+            if not connections:
+                return
+            connections.discard(websocket)
+            if not connections:
+                self._guest_connections.pop(ticket_id, None)
+
+    async def send_to_guest(self, ticket_id: int, message: dict) -> bool:
+        async with self._lock:
+            connections = list(self._guest_connections.get(ticket_id, set()))
+        delivered = False
+        disconnected: list[WebSocket] = []
+        data = json.dumps(message, default=str, ensure_ascii=False)
+        for ws in connections:
+            try:
+                await ws.send_text(data)
+                delivered = True
+            except Exception:
+                disconnected.append(ws)
+        for ws in disconnected:
+            await self.disconnect_guest(ws, ticket_id)
+        return delivered
 
 
 # Глобальный менеджер подключений
@@ -246,6 +276,48 @@ async def cabinet_websocket_endpoint(websocket: WebSocket):
         await cabinet_ws_manager.disconnect(websocket, user_id)
 
 
+@router.websocket('/public/support/ws')
+async def guest_support_websocket_endpoint(websocket: WebSocket):
+    """Real-time updates for one anonymous support conversation."""
+    protocols = [value.strip() for value in websocket.headers.get('sec-websocket-protocol', '').split(',')]
+    if len(protocols) != 3 or protocols[0] != 'guest-support':
+        await websocket.accept()
+        await websocket.close(code=1008, reason='Invalid guest credentials')
+        return
+    try:
+        ticket_id = int(protocols[1])
+    except (TypeError, ValueError):
+        await websocket.accept(subprotocol='guest-support')
+        await websocket.close(code=1008, reason='Invalid ticket')
+        return
+
+    from app.cabinet.routes.guest_support import _get_guest_ticket
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await _get_guest_ticket(db, ticket_id, protocols[2])
+    except Exception:
+        await websocket.accept(subprotocol='guest-support')
+        await websocket.close(code=1008, reason='Invalid guest credentials')
+        return
+
+    await websocket.accept(subprotocol='guest-support')
+    await cabinet_ws_manager.connect_guest(websocket, ticket_id)
+    await websocket.send_json({'type': 'connected', 'ticket_id': ticket_id})
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                if json.loads(data).get('type') == 'ping':
+                    await websocket.send_json({'type': 'pong'})
+            except json.JSONDecodeError:
+                continue
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await cabinet_ws_manager.disconnect_guest(websocket, ticket_id)
+
+
 # Функции для отправки уведомлений (используются из других модулей)
 async def notify_user_ticket_reply(user_id: int, ticket_id: int, message: str) -> None:
     """Уведомить пользователя об ответе в тикете."""
@@ -256,6 +328,13 @@ async def notify_user_ticket_reply(user_id: int, ticket_id: int, message: str) -
             'ticket_id': ticket_id,
             'message': message,
         },
+    )
+
+
+async def notify_guest_ticket_reply(ticket_id: int, message: str) -> None:
+    await cabinet_ws_manager.send_to_guest(
+        ticket_id,
+        {'type': 'ticket.admin_reply', 'ticket_id': ticket_id, 'message': message},
     )
 
 

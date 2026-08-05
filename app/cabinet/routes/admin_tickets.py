@@ -11,7 +11,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.cabinet.routes.websocket import notify_user_ticket_reply
+from app.cabinet.routes.websocket import notify_guest_ticket_reply, notify_user_ticket_reply
 from app.config import settings
 from app.database.crud.ticket import TicketCRUD
 from app.database.crud.ticket_notification import TicketNotificationCRUD
@@ -39,6 +39,13 @@ class AdminTicketUserInfo(BaseModel):
     last_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AdminTicketGuestInfo(BaseModel):
+    """Anonymous visitor identity supplied with a support request."""
+
+    name: str
+    contact: str | None = None
 
 
 class AdminTicketUserContext(BaseModel):
@@ -76,6 +83,7 @@ class AdminTicketResponse(BaseModel):
     closed_at: datetime | None = None
     messages_count: int = 0
     user: AdminTicketUserInfo | None = None
+    guest: AdminTicketGuestInfo | None = None
     last_message: TicketMessageResponse | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -93,6 +101,7 @@ class AdminTicketDetailResponse(BaseModel):
     closed_at: datetime | None = None
     is_reply_blocked: bool = False
     user: AdminTicketUserInfo | None = None
+    guest: AdminTicketGuestInfo | None = None
     user_context: AdminTicketUserContext | None = None
     messages: list[TicketMessageResponse] = []
 
@@ -122,6 +131,14 @@ class AdminReplyRequest(BaseModel):
         if not (self.message or '').strip() and not self.media_file_id:
             raise ValueError('Reply message or media is required')
         return self
+
+
+class AdminConversationCreateRequest(BaseModel):
+    """Start a direct support conversation with an existing cabinet user."""
+
+    user_id: int = Field(..., ge=1)
+    message: str = Field(..., min_length=1, max_length=4000)
+    title: str = Field('Сообщение от поддержки', min_length=3, max_length=255)
 
 
 class AdminStatusUpdateRequest(BaseModel):
@@ -238,6 +255,9 @@ def _ticket_to_admin_response(ticket: Ticket, include_messages: bool = False) ->
     user_info = None
     if hasattr(ticket, 'user') and ticket.user:
         user_info = _user_to_info(ticket.user)
+    guest_info = None
+    if ticket.user_id is None and ticket.guest_name:
+        guest_info = AdminTicketGuestInfo(name=ticket.guest_name, contact=ticket.guest_contact)
 
     return AdminTicketResponse(
         id=ticket.id,
@@ -249,6 +269,7 @@ def _ticket_to_admin_response(ticket: Ticket, include_messages: bool = False) ->
         closed_at=ticket.closed_at,
         messages_count=messages_count,
         user=user_info,
+        guest=guest_info,
         last_message=last_message,
     )
 
@@ -441,6 +462,80 @@ async def get_all_tickets(
     )
 
 
+@router.post('/conversations', response_model=AdminTicketDetailResponse, status_code=status.HTTP_201_CREATED)
+async def create_direct_conversation(
+    request: AdminConversationCreateRequest,
+    admin: User = Depends(require_permission('tickets:reply')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Start a support chat whose first message is sent by an operator."""
+    user_result = await db.execute(
+        select(User).where(User.id == request.user_id).options(selectinload(User.subscription))
+    )
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+
+    now = datetime.now(UTC)
+    ticket = Ticket(
+        user_id=user.id,
+        title=request.title.strip(),
+        status='answered',
+        priority='normal',
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(ticket)
+    await db.flush()
+    message = TicketMessage(
+        ticket_id=ticket.id,
+        user_id=user.id,
+        message_text=request.message.strip(),
+        is_from_admin=True,
+        created_at=now,
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(ticket, ['messages'])
+
+    try:
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+
+        from app.handlers.admin.tickets import notify_user_about_ticket_reply
+
+        bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        try:
+            await notify_user_about_ticket_reply(bot, ticket, request.message.strip(), db)
+        finally:
+            await bot.session.close()
+    except Exception as error:
+        logger.warning('Failed to send direct conversation Telegram notification', error=error)
+
+    try:
+        await TicketNotificationCRUD.create_user_notification_for_admin_reply(db, ticket, request.message.strip())
+    except Exception as error:
+        logger.warning('Failed to create direct conversation notification', error=error)
+    try:
+        await notify_user_ticket_reply(user.id, ticket.id, request.message.strip()[:100])
+    except Exception as error:
+        logger.warning('Failed to send direct conversation WebSocket event', error=error)
+
+    return AdminTicketDetailResponse(
+        id=ticket.id,
+        title=ticket.title,
+        status=ticket.status,
+        priority=ticket.priority,
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+        closed_at=ticket.closed_at,
+        user=_user_to_info(user),
+        user_context=_user_to_context(user),
+        messages=[_message_to_response(message)],
+    )
+
+
 @router.get('/{ticket_id}', response_model=AdminTicketDetailResponse)
 async def get_ticket_detail(
     ticket_id: int,
@@ -474,6 +569,9 @@ async def get_ticket_detail(
     if ticket.user:
         user_info = _user_to_info(ticket.user)
         user_context = _user_to_context(ticket.user)
+    guest_info = None
+    if ticket.user_id is None and ticket.guest_name:
+        guest_info = AdminTicketGuestInfo(name=ticket.guest_name, contact=ticket.guest_contact)
 
     return AdminTicketDetailResponse(
         id=ticket.id,
@@ -483,8 +581,9 @@ async def get_ticket_detail(
         created_at=ticket.created_at,
         updated_at=ticket.updated_at or ticket.created_at,
         closed_at=ticket.closed_at,
-        is_reply_blocked=ticket.is_reply_blocked if hasattr(ticket, 'is_reply_blocked') else False,
+        is_reply_blocked=ticket.is_user_reply_blocked,
         user=user_info,
+        guest=guest_info,
         user_context=user_context,
         messages=messages_response,
     )
@@ -544,7 +643,8 @@ async def reply_to_ticket(
         try:
             from app.handlers.admin.tickets import notify_user_about_ticket_reply
 
-            await notify_user_about_ticket_reply(bot, ticket, reply_preview, db)
+            if ticket.user_id is not None:
+                await notify_user_about_ticket_reply(bot, ticket, reply_preview, db)
         except Exception as e:
             logger.warning('Failed to notify user about ticket reply', error=e)
         finally:
@@ -553,13 +653,20 @@ async def reply_to_ticket(
         logger.warning('Failed to send Telegram notification', error=e)
 
     # Уведомить пользователя в кабинете
-    try:
-        notification = await TicketNotificationCRUD.create_user_notification_for_admin_reply(db, ticket, reply_preview)
-        if notification:
-            # Отправить WebSocket уведомление
+    if ticket.user_id is None:
+        try:
+            await notify_guest_ticket_reply(ticket.id, reply_preview[:100])
+        except Exception as e:
+            logger.warning('Failed to send guest ticket WebSocket event', error=e)
+    else:
+        try:
+            await TicketNotificationCRUD.create_user_notification_for_admin_reply(db, ticket, reply_preview)
+        except Exception as e:
+            logger.warning('Failed to create cabinet notification for admin reply', error=e)
+        try:
             await notify_user_ticket_reply(ticket.user_id, ticket.id, reply_preview[:100])
-    except Exception as e:
-        logger.warning('Failed to create cabinet notification for admin reply', error=e)
+        except Exception as e:
+            logger.warning('Failed to send ticket reply WebSocket event', error=e)
 
     return _message_to_response(message)
 

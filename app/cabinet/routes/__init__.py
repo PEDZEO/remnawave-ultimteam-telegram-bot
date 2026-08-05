@@ -45,6 +45,7 @@ from .balance import router as balance_router
 from .branding import router as branding_router
 from .contests import router as contests_router
 from .gift import router as gift_router
+from .guest_support import router as guest_support_router
 from .info import router as info_router
 from .media import router as media_router
 from .news import router as news_router
@@ -73,6 +74,7 @@ router = APIRouter(prefix='/cabinet', tags=['Cabinet'])
 
 # Public endpoints used by payment-provider crawlers.
 router.include_router(site_verification_router)
+router.include_router(guest_support_router)
 
 # Include all sub-routers
 router.include_router(auth_router)
