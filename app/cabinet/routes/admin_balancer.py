@@ -151,7 +151,7 @@ async def refresh_balancer_groups(
     admin: User = Depends(get_current_admin_user),
 ) -> Any:
     """Proxy balancer /admin/refresh-groups (admin token required)."""
-    return await _proxy_balancer_json('GET', '/admin/refresh-groups', requires_admin=True)
+    return await _proxy_balancer_json('POST', '/admin/refresh-groups', requires_admin=True)
 
 
 @router.post('/refresh-stats')
@@ -159,7 +159,7 @@ async def refresh_balancer_stats(
     admin: User = Depends(get_current_admin_user),
 ) -> Any:
     """Proxy balancer /admin/refresh-stats (admin token required)."""
-    return await _proxy_balancer_json('GET', '/admin/refresh-stats', requires_admin=True)
+    return await _proxy_balancer_json('POST', '/admin/refresh-stats', requires_admin=True)
 
 
 @router.get('/groups')

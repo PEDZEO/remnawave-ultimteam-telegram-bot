@@ -44,3 +44,23 @@ async def test_disable_attack_mode_quotes_node_name(monkeypatch: pytest.MonkeyPa
         '/admin/attack-mode/DE%20Main%2F1',
         requires_admin=True,
     )
+
+
+@pytest.mark.parametrize(
+    ('handler', 'path'),
+    [
+        (admin_balancer.refresh_balancer_groups, '/admin/refresh-groups'),
+        (admin_balancer.refresh_balancer_stats, '/admin/refresh-stats'),
+    ],
+)
+async def test_refresh_actions_use_post(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: object,
+    path: str,
+) -> None:
+    proxy = AsyncMock(return_value={'status': 'ok'})
+    monkeypatch.setattr(admin_balancer, '_proxy_balancer_json', proxy)
+
+    await handler(admin=None)  # type: ignore[operator]
+
+    proxy.assert_awaited_once_with('POST', path, requires_admin=True)
