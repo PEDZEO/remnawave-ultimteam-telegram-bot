@@ -22,7 +22,7 @@ async def initialize_remnawave_sync_stage(timeline: StartupTimeline, logger: Log
                     if compatibility_stats['migrated']:
                         stage.log(
                             'Обновлены идентификаторы Remnawave 3.x: '
-                            f"{compatibility_stats['migrated']} из {compatibility_stats['checked']}"
+                            f'{compatibility_stats["migrated"]} из {compatibility_stats["checked"]}'
                         )
                 except Exception as error:
                     stage.warning(f'Не удалось проверить совместимость Remnawave 3.x: {error}')

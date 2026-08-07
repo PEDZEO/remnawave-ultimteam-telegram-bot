@@ -1028,9 +1028,7 @@ async def notify_admins_about_new_ticket(ticket: Ticket, db: AsyncSession):
             user = None
         full_name = user.full_name if user else (ticket.guest_name or 'Гость сайта')
         telegram_id_display = (
-            user.telegram_id or user.email or f'#{user.id}'
-            if user
-            else (ticket.guest_contact or 'без контакта')
+            user.telegram_id or user.email or f'#{user.id}' if user else (ticket.guest_contact or 'без контакта')
         )
         username_display = (user.username or 'отсутствует') if user else 'гость сайта'
         full_name = escape(str(full_name))
@@ -1106,9 +1104,7 @@ async def notify_admins_about_ticket_reply(
             user = None
         full_name = user.full_name if user else (ticket.guest_name or 'Гость сайта')
         telegram_id_display = (
-            user.telegram_id or user.email or f'#{user.id}'
-            if user
-            else (ticket.guest_contact or 'без контакта')
+            user.telegram_id or user.email or f'#{user.id}' if user else (ticket.guest_contact or 'без контакта')
         )
         username_display = (user.username or 'отсутствует') if user else 'гость сайта'
         full_name = escape(str(full_name))

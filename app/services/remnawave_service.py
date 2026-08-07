@@ -273,9 +273,7 @@ class RemnaWaveService:
             )
         )
         assigned_identifiers = {
-            identifier: user_id
-            for user_id, identifier in assigned_result.all()
-            if identifier and identifier.isdigit()
+            identifier: user_id for user_id, identifier in assigned_result.all() if identifier and identifier.isdigit()
         }
 
         target_short_uuids = {

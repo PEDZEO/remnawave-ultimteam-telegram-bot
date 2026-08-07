@@ -1749,7 +1749,7 @@ class User(Base):
     referrals = relationship(
         'User',
         backref='referrer',
-        remote_side=[id],
+        remote_side=lambda: [User.id],
         foreign_keys='User.referred_by_id',
         post_update=True,
     )
