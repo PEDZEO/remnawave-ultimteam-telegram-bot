@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect, text
@@ -15,8 +16,17 @@ def _load_migration():
     return module
 
 
-def test_guest_support_migration_upgrades_sqlite_schema() -> None:
+@pytest.fixture
+def sqlite_engine():
     engine = create_engine('sqlite://')
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+def test_guest_support_migration_upgrades_sqlite_schema(sqlite_engine) -> None:
+    engine = sqlite_engine
     migration = _load_migration()
 
     with engine.begin() as connection:
@@ -45,8 +55,8 @@ def test_guest_support_migration_upgrades_sqlite_schema() -> None:
         }
 
 
-def test_guest_support_migration_downgrades_sqlite_schema() -> None:
-    engine = create_engine('sqlite://')
+def test_guest_support_migration_downgrades_sqlite_schema(sqlite_engine) -> None:
+    engine = sqlite_engine
     migration = _load_migration()
 
     with engine.begin() as connection:
