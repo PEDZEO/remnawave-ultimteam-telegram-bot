@@ -21,6 +21,22 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix='/admin/rbac/policies', tags=['Admin RBAC Policies'])
 
 
+def _validate_conditions(effect: str, conditions: dict[str, Any]) -> None:
+    max_actions = conditions.get('max_actions_per_hour')
+    if max_actions is None:
+        return
+    if effect != 'allow':
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='max_actions_per_hour is supported only for allow policies',
+        )
+    if not isinstance(max_actions, int) or isinstance(max_actions, bool) or max_actions <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='max_actions_per_hour must be a positive integer',
+        )
+
+
 # ============ Schemas ============
 
 
@@ -118,6 +134,8 @@ async def create_policy(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Create a new access policy (ABAC rule)."""
+    _validate_conditions(payload.effect, payload.conditions)
+
     # Validate role_id if provided
     if payload.role_id is not None:
         role = await AdminRoleCRUD.get_by_id(db, payload.role_id)
@@ -167,6 +185,10 @@ async def update_policy(
         )
 
     update_data = payload.model_dump(exclude_unset=True)
+    _validate_conditions(
+        update_data.get('effect', existing.effect),
+        update_data.get('conditions', existing.conditions or {}),
+    )
 
     # Validate role_id if changing
     if 'role_id' in update_data and update_data['role_id'] is not None:

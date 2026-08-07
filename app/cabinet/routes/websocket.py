@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
+from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -12,6 +14,7 @@ from app.cabinet.auth.jwt_handler import get_token_payload
 from app.config import settings
 from app.database.crud.user import get_user_by_id
 from app.database.database import AsyncSessionLocal
+from app.utils.cache import cache
 
 
 logger = structlog.get_logger(__name__)
@@ -19,6 +22,8 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 _AUTH_SUBPROTOCOL = 'cabinet-auth'
+_WS_BROKER_CHANNEL = 'cabinet:websocket:events'
+_WS_SEND_TIMEOUT_SECONDS = 3.0
 
 
 def _get_websocket_credentials(websocket: WebSocket) -> tuple[str | None, str | None]:
@@ -28,9 +33,7 @@ def _get_websocket_credentials(websocket: WebSocket) -> tuple[str | None, str | 
     ]
     if len(requested_protocols) >= 2 and requested_protocols[0] == _AUTH_SUBPROTOCOL:
         return requested_protocols[1], _AUTH_SUBPROTOCOL
-
-    # Keep query-token compatibility for older cabinet builds during rolling updates.
-    return websocket.query_params.get('token'), None
+    return None, None
 
 
 class CabinetConnectionManager:
@@ -43,9 +46,84 @@ class CabinetConnectionManager:
         self._admin_connections: dict[int, set[WebSocket]] = {}
         self._guest_connections: dict[int, set[WebSocket]] = {}
         self._lock = asyncio.Lock()
+        self._broker_lock = asyncio.Lock()
+        self._instance_id = uuid4().hex
+        self._subscriber_task: asyncio.Task | None = None
+        self._pubsub = None
+
+    async def start(self) -> None:
+        if self._subscriber_task is not None or not cache._connected or cache.redis_client is None:
+            return
+        async with self._broker_lock:
+            if self._subscriber_task is not None or not cache._connected or cache.redis_client is None:
+                return
+            try:
+                self._pubsub = cache.redis_client.pubsub()
+                await self._pubsub.subscribe(_WS_BROKER_CHANNEL)
+                self._subscriber_task = asyncio.create_task(self._listen_for_broker_events())
+            except Exception:
+                self._pubsub = None
+                logger.warning('Cabinet WS broker subscription unavailable', exc_info=True)
+
+    async def stop(self) -> None:
+        if self._subscriber_task is not None:
+            self._subscriber_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._subscriber_task
+            self._subscriber_task = None
+        if self._pubsub is not None:
+            await self._pubsub.aclose()
+            self._pubsub = None
+
+    async def _listen_for_broker_events(self) -> None:
+        try:
+            async for event in self._pubsub.listen():
+                if event.get('type') != 'message':
+                    continue
+                raw_data = event.get('data')
+                if isinstance(raw_data, bytes):
+                    raw_data = raw_data.decode('utf-8')
+                await self._handle_broker_message(json.loads(raw_data))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Cabinet WS broker listener failed')
+            self._subscriber_task = None
+
+    async def _handle_broker_message(self, event: dict) -> None:
+        if event.get('origin') == self._instance_id:
+            return
+        target_type = event.get('target_type')
+        message = event.get('message')
+        if not isinstance(message, dict):
+            return
+        if target_type == 'user':
+            await self._send_to_user_local(int(event['target_id']), message)
+        elif target_type == 'guest':
+            await self._send_to_guest_local(int(event['target_id']), message)
+        elif target_type == 'admins':
+            await self._send_to_admins_local(message)
+
+    async def _publish(self, target_type: str, message: dict, target_id: int | None = None) -> bool:
+        await self.start()
+        if not cache._connected or cache.redis_client is None:
+            return False
+        event = {
+            'origin': self._instance_id,
+            'target_type': target_type,
+            'target_id': target_id,
+            'message': message,
+        }
+        try:
+            await cache.redis_client.publish(_WS_BROKER_CHANNEL, json.dumps(event, default=str, ensure_ascii=False))
+            return True
+        except Exception:
+            logger.warning('Cabinet WS broker publish failed', target_type=target_type, exc_info=True)
+            return False
 
     async def connect(self, websocket: WebSocket, user_id: int, is_admin: bool) -> None:
         """Зарегистрировать подключение."""
+        await self.start()
         async with self._lock:
             if user_id not in self._user_connections:
                 self._user_connections[user_id] = set()
@@ -80,6 +158,13 @@ class CabinetConnectionManager:
 
     async def send_to_user(self, user_id: int, message: dict) -> bool:
         """Отправить сообщение конкретному пользователю."""
+        delivered, published = await asyncio.gather(
+            self._send_to_user_local(user_id, message),
+            self._publish('user', message, user_id),
+        )
+        return delivered or published
+
+    async def _send_to_user_local(self, user_id: int, message: dict) -> bool:
         # Snapshot connections under the lock to avoid mutation during iteration
         async with self._lock:
             connections = list(self._user_connections.get(user_id, set()))
@@ -91,13 +176,17 @@ class CabinetConnectionManager:
         delivered_count = 0
         data = json.dumps(message, default=str, ensure_ascii=False)
 
-        for ws in connections:
+        async def send_one(ws: WebSocket) -> None:
+            nonlocal delivered_count
             try:
-                await ws.send_text(data)
+                async with asyncio.timeout(_WS_SEND_TIMEOUT_SECONDS):
+                    await ws.send_text(data)
                 delivered_count += 1
-            except Exception as e:
-                logger.warning('Failed to send to user', user_id=user_id, e=e)
+            except Exception as error:
+                logger.warning('Failed to send to user', user_id=user_id, error=error)
                 disconnected.add(ws)
+
+        await asyncio.gather(*(send_one(ws) for ws in connections))
 
         # Cleanup disconnected
         if disconnected:
@@ -109,6 +198,12 @@ class CabinetConnectionManager:
 
     async def send_to_admins(self, message: dict) -> None:
         """Отправить сообщение всем админам."""
+        await asyncio.gather(
+            self._send_to_admins_local(message),
+            self._publish('admins', message),
+        )
+
+    async def _send_to_admins_local(self, message: dict) -> None:
         # Snapshot connections under the lock to avoid mutation during iteration
         async with self._lock:
             if not self._admin_connections:
@@ -119,15 +214,15 @@ class CabinetConnectionManager:
         data = json.dumps(message, default=str, ensure_ascii=False)
         disconnected_by_user: dict[int, set[WebSocket]] = {}
 
-        for user_id, connections in admin_snapshot:
-            for ws in connections:
-                try:
+        async def send_one(user_id: int, ws: WebSocket) -> None:
+            try:
+                async with asyncio.timeout(_WS_SEND_TIMEOUT_SECONDS):
                     await ws.send_text(data)
-                except Exception as e:
-                    logger.warning('Failed to send to admin', user_id=user_id, e=e)
-                    if user_id not in disconnected_by_user:
-                        disconnected_by_user[user_id] = set()
-                    disconnected_by_user[user_id].add(ws)
+            except Exception as error:
+                logger.warning('Failed to send to admin', user_id=user_id, error=error)
+                disconnected_by_user.setdefault(user_id, set()).add(ws)
+
+        await asyncio.gather(*(send_one(user_id, ws) for user_id, connections in admin_snapshot for ws in connections))
 
         # Cleanup disconnected
         if disconnected_by_user:
@@ -137,6 +232,7 @@ class CabinetConnectionManager:
                         self._admin_connections.get(user_id, set()).discard(ws)
 
     async def connect_guest(self, websocket: WebSocket, ticket_id: int) -> None:
+        await self.start()
         async with self._lock:
             self._guest_connections.setdefault(ticket_id, set()).add(websocket)
 
@@ -150,17 +246,29 @@ class CabinetConnectionManager:
                 self._guest_connections.pop(ticket_id, None)
 
     async def send_to_guest(self, ticket_id: int, message: dict) -> bool:
+        delivered, published = await asyncio.gather(
+            self._send_to_guest_local(ticket_id, message),
+            self._publish('guest', message, ticket_id),
+        )
+        return delivered or published
+
+    async def _send_to_guest_local(self, ticket_id: int, message: dict) -> bool:
         async with self._lock:
             connections = list(self._guest_connections.get(ticket_id, set()))
         delivered = False
         disconnected: list[WebSocket] = []
         data = json.dumps(message, default=str, ensure_ascii=False)
-        for ws in connections:
+
+        async def send_one(ws: WebSocket) -> None:
+            nonlocal delivered
             try:
-                await ws.send_text(data)
+                async with asyncio.timeout(_WS_SEND_TIMEOUT_SECONDS):
+                    await ws.send_text(data)
                 delivered = True
             except Exception:
                 disconnected.append(ws)
+
+        await asyncio.gather(*(send_one(ws) for ws in connections))
         for ws in disconnected:
             await self.disconnect_guest(ws, ticket_id)
         return delivered

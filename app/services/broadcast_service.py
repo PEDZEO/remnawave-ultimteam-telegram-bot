@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -9,7 +10,7 @@ import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import InterfaceError, SQLAlchemyError
 
 from app.database.database import AsyncSessionLocal
@@ -670,8 +671,7 @@ class EmailBroadcastService:
                 broadcast.failed_count = 0
                 await session.commit()
 
-            # Fetch email recipients
-            recipients = await self._fetch_email_recipients(config.target)
+            total_count = await self._count_email_recipients(config.target)
 
             # Update total count
             async with AsyncSessionLocal() as session:
@@ -680,14 +680,14 @@ class EmailBroadcastService:
                     logger.error('Broadcast record deleted before start', broadcast_id=broadcast_id)
                     return
 
-                broadcast.total_count = len(recipients)
+                broadcast.total_count = total_count
                 await session.commit()
 
             if cancel_event.is_set():
                 await self._mark_cancelled(broadcast_id, sent_count, failed_count)
                 return
 
-            if not recipients:
+            if total_count == 0:
                 logger.info('Email broadcast : no recipients found', broadcast_id=broadcast_id)
                 await self._mark_finished(broadcast_id, sent_count, failed_count, cancelled=False)
                 return
@@ -695,9 +695,9 @@ class EmailBroadcastService:
             # Send emails with rate limiting
             sent_count, failed_count, was_cancelled = await self._send_emails(
                 broadcast_id,
-                recipients,
                 config,
                 cancel_event,
+                total_count,
             )
 
             if was_cancelled:
@@ -713,108 +713,79 @@ class EmailBroadcastService:
             logger.exception('Critical error in email broadcast', broadcast_id=broadcast_id, exc=exc)
             await self._mark_failed(broadcast_id, sent_count, failed_count)
 
-    async def _fetch_email_recipients(self, target: str) -> list[_EmailRecipient]:
-        """
-        Загружает получателей email-рассылки.
+    @staticmethod
+    def _email_recipient_query(target: str):
+        base_conditions = [
+            User.email.isnot(None),
+            User.email_verified.is_(True),
+            User.status == UserStatus.ACTIVE.value,
+        ]
+        query = select(User.id, User.email, User.username, User.first_name, User.last_name)
+        if target == 'all_email':
+            return query.where(*base_conditions)
+        if target == 'email_only':
+            return query.where(*base_conditions, User.auth_type == 'email')
+        if target == 'telegram_with_email':
+            return query.where(*base_conditions, User.auth_type == 'telegram', User.telegram_id.isnot(None))
+        if target == 'active_email':
+            return query.join(Subscription, User.id == Subscription.user_id).where(
+                *base_conditions,
+                Subscription.status == SubscriptionStatus.ACTIVE.value,
+            )
+        if target == 'expired_email':
+            return query.join(Subscription, User.id == Subscription.user_id).where(
+                *base_conditions,
+                Subscription.status.in_((SubscriptionStatus.EXPIRED.value, SubscriptionStatus.DISABLED.value)),
+            )
+        return None
 
-        Возвращает список _EmailRecipient (скалярные данные), а не ORM-объектов,
-        чтобы избежать detached state при долгих рассылках.
-        """
-        from sqlalchemy import select
-
-        from app.database.models import Subscription, SubscriptionStatus, User
-
+    async def _count_email_recipients(self, target: str) -> int:
+        query = self._email_recipient_query(target)
+        if query is None:
+            logger.warning('Unknown email target filter', target=target)
+            return 0
+        count_query = select(func.count()).select_from(query.order_by(None).subquery())
         async with AsyncSessionLocal() as session:
-            # Base query: verified email users with active status
-            base_conditions = [
-                User.email.isnot(None),
-                User.email_verified == True,
-                User.status == 'active',
-            ]
+            return int((await session.scalar(count_query)) or 0)
 
-            if target == 'all_email':
-                query = select(User).where(*base_conditions)
+    async def _iter_email_recipient_batches(
+        self,
+        target: str,
+        batch_size: int = 1000,
+    ) -> AsyncIterator[list[_EmailRecipient]]:
+        query = self._email_recipient_query(target)
+        if query is None:
+            logger.warning('Unknown email target filter', target=target)
+            return
 
-            elif target == 'email_only':
-                query = select(User).where(
-                    *base_conditions,
-                    User.auth_type == 'email',
-                )
-
-            elif target == 'telegram_with_email':
-                query = select(User).where(
-                    *base_conditions,
-                    User.auth_type == 'telegram',
-                    User.telegram_id.isnot(None),
-                )
-
-            elif target == 'active_email':
-                query = (
-                    select(User)
-                    .join(Subscription, User.id == Subscription.user_id)
-                    .where(
-                        *base_conditions,
-                        Subscription.status == SubscriptionStatus.ACTIVE.value,
-                    )
-                )
-
-            elif target == 'expired_email':
-                query = (
-                    select(User)
-                    .join(Subscription, User.id == Subscription.user_id)
-                    .where(
-                        *base_conditions,
-                        Subscription.status.in_(
-                            [
-                                SubscriptionStatus.EXPIRED.value,
-                                SubscriptionStatus.DISABLED.value,
-                            ]
-                        ),
-                    )
-                )
-
-            else:
-                logger.warning('Unknown email target filter', target=target)
-                return []
-
-            # Загружаем батчами и извлекаем скаляры сразу
-            recipients: list[_EmailRecipient] = []
-            offset = 0
-            batch_size = 1000
-
+        last_user_id = 0
+        async with AsyncSessionLocal() as session:
             while True:
-                result = await session.execute(query.offset(offset).limit(batch_size))
-                batch = result.scalars().all()
-
-                if not batch:
+                rows = (
+                    await session.execute(query.where(User.id > last_user_id).order_by(User.id).limit(batch_size))
+                ).all()
+                if not rows:
                     break
 
-                for user in batch:
-                    email = user.email
+                recipients = []
+                for row in rows:
+                    last_user_id = row.id
+                    email = row.email
                     if not email:
                         continue
-
-                    # Формируем имя пользователя
-                    user_name = user.username
-                    if not user_name:
-                        user_name = user.first_name or ''
-                        if last_name := user.last_name:
-                            user_name = f'{user_name} {last_name}'.strip()
-                    if not user_name:
-                        user_name = email.split('@')[0]
-
-                    recipients.append(_EmailRecipient(email=email, user_name=user_name))
-
-                offset += batch_size
-
-            return recipients
+                    user_name = (
+                        row.username or ' '.join(part for part in (row.first_name, row.last_name) if part).strip()
+                    )
+                    recipients.append(_EmailRecipient(email=email, user_name=user_name or email.split('@')[0]))
+                if recipients:
+                    yield recipients
 
     async def _send_emails(
         self,
         broadcast_id: int,
-        recipients: list[_EmailRecipient],
         config: EmailBroadcastConfig,
         cancel_event: asyncio.Event,
+        total_count: int,
     ) -> tuple[int, int, bool]:
         """
         Отправляет email-рассылку с rate limiting.
@@ -854,37 +825,35 @@ class EmailBroadcastService:
                     )
                     return False
 
-        for i in range(0, len(recipients), EMAIL_BATCH_SIZE):
-            if cancel_event.is_set():
-                await self._mark_cancelled(broadcast_id, sent_count, failed_count)
-                return sent_count, failed_count, True
+        async for recipients in self._iter_email_recipient_batches(config.target):
+            for i in range(0, len(recipients), EMAIL_BATCH_SIZE):
+                if cancel_event.is_set():
+                    await self._mark_cancelled(broadcast_id, sent_count, failed_count)
+                    return sent_count, failed_count, True
 
-            batch = recipients[i : i + EMAIL_BATCH_SIZE]
-            tasks = [send_single_email(r) for r in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+                batch = recipients[i : i + EMAIL_BATCH_SIZE]
+                tasks = [send_single_email(r) for r in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for result in results:
-                if result is True:
-                    sent_count += 1
-                elif result is None:
-                    pass  # Cancelled or skipped
-                else:
-                    failed_count += 1
+                for result in results:
+                    if result is True:
+                        sent_count += 1
+                    elif result is not None:
+                        failed_count += 1
 
-            # Обновляем прогресс периодически
-            processed = sent_count + failed_count
-            now = asyncio.get_running_loop().time()
-            if (
-                processed - last_progress_count >= _PROGRESS_UPDATE_MESSAGES
-                or now - last_progress_time >= _PROGRESS_MIN_INTERVAL_SEC
-                or i + EMAIL_BATCH_SIZE >= len(recipients)
-            ):
-                await self._update_progress(broadcast_id, sent_count, failed_count)
-                last_progress_count = processed
-                last_progress_time = now
+                processed = sent_count + failed_count
+                now = asyncio.get_running_loop().time()
+                if (
+                    processed - last_progress_count >= _PROGRESS_UPDATE_MESSAGES
+                    or now - last_progress_time >= _PROGRESS_MIN_INTERVAL_SEC
+                    or processed >= total_count
+                ):
+                    await self._update_progress(broadcast_id, sent_count, failed_count)
+                    last_progress_count = processed
+                    last_progress_time = now
 
-            # Rate limiting: ~8 emails/sec
-            await asyncio.sleep(EMAIL_BATCH_SIZE / EMAIL_RATE_LIMIT)
+                if processed < total_count:
+                    await asyncio.sleep(len(batch) / EMAIL_RATE_LIMIT)
 
         return sent_count, failed_count, False
 

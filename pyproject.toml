@@ -37,6 +37,7 @@ dev = [
     'pytest-cov',
     'mypy',
     'pip-audit',
+    'httpx2>=2.9.1',
 ]
 
 [tool.uv]

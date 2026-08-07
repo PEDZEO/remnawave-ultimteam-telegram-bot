@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.rbac import AccessPolicyCRUD, AuditLogCRUD, UserRoleCRUD
+from app.utils.cache import RateLimitCache
 
 
 if TYPE_CHECKING:
@@ -127,9 +128,12 @@ def _policy_matches_resource(policy: AccessPolicy, required_perm: str) -> bool:
     return any(fnmatch(action, pattern) for pattern in policy_actions)
 
 
-def _evaluate_conditions(
+async def _evaluate_conditions(
     conditions: dict | None,
     *,
+    user_id: int,
+    policy_id: int,
+    required_permission: str,
     ip_address: str | None = None,
 ) -> bool:
     """Evaluate ABAC conditions dict.  Returns ``True`` when ALL conditions are met.
@@ -139,7 +143,7 @@ def _evaluate_conditions(
       must fall within the range (inclusive start, exclusive end).
     - ``ip_whitelist``: ``["192.168.1.0/24", "10.0.0.1"]`` -- *ip_address* must
       match at least one entry (CIDR network or exact host).
-    - ``max_actions_per_hour``: reserved for future rate-limit logic; always passes.
+    - ``max_actions_per_hour``: atomic per-user, per-policy limit backed by Redis.
     """
     if not conditions:
         return True
@@ -190,8 +194,21 @@ def _evaluate_conditions(
         if not matched:
             return False
 
-    # --- max_actions_per_hour (stub) ---
-    # Will be implemented with rate-limit counters later.
+    # --- max_actions_per_hour ---
+    max_actions = conditions.get('max_actions_per_hour')
+    if max_actions is not None:
+        if not isinstance(max_actions, int) or isinstance(max_actions, bool) or max_actions <= 0:
+            logger.warning('Invalid max_actions_per_hour condition', value=max_actions, policy_id=policy_id)
+            return False
+        action_key = f'abac:{policy_id}:{required_permission}'
+        if await RateLimitCache.is_rate_limited(
+            user_id,
+            action_key,
+            max_actions,
+            3600,
+            fail_closed=True,
+        ):
+            return False
 
     return True
 
@@ -261,15 +278,26 @@ class PermissionService:
             return True, 'Granted by RBAC'
 
         # Step 4 -- evaluate ABAC policies (highest priority first, already sorted)
-        explicit_deny = False
-        deny_reason = ''
+        allow_policies = [
+            policy
+            for policy in policies
+            if policy.effect == 'allow' and _policy_matches_resource(policy, required_permission)
+        ]
+        matching_allow = False
 
         for policy in policies:
             if not _policy_matches_resource(policy, required_permission):
                 continue
 
-            conditions_met = _evaluate_conditions(
+            if policy.effect == 'deny' and 'max_actions_per_hour' in (policy.conditions or {}):
+                logger.warning('Ignoring invalid rate limit on deny policy', policy_id=policy.id)
+                continue
+
+            conditions_met = await _evaluate_conditions(
                 policy.conditions,
+                user_id=user.id,
+                policy_id=policy.id,
+                required_permission=required_permission,
                 ip_address=ip_address,
             )
             if not conditions_met:
@@ -277,8 +305,6 @@ class PermissionService:
                 continue
 
             if policy.effect == 'deny':
-                explicit_deny = True
-                deny_reason = f'Denied by policy: {policy.name}'
                 logger.debug(
                     'Permission denied by ABAC policy',
                     user_id=user.id,
@@ -286,15 +312,12 @@ class PermissionService:
                     policy_id=policy.id,
                     policy_name=policy.name,
                 )
-                # Deny is final -- stop evaluation
-                break
+                return False, f'Denied by policy: {policy.name}'
 
-            # effect == 'allow' does not override a prior deny at higher priority,
-            # but since policies are sorted desc and deny breaks immediately,
-            # reaching here means no deny has fired yet -- just continue.
+            matching_allow = True
 
-        if explicit_deny:
-            return False, deny_reason
+        if allow_policies and not matching_allow:
+            return False, 'No allow policy conditions matched'
 
         return True, 'Granted by RBAC + ABAC'
 

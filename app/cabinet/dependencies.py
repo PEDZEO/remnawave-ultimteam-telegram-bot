@@ -11,6 +11,7 @@ from app.database.database import AsyncSessionLocal
 from app.database.models import User
 from app.services.blacklist_service import blacklist_service
 from app.services.maintenance_service import maintenance_service
+from app.utils.client_ip import get_trusted_client_ip
 
 from .auth.jwt_handler import get_token_payload
 from .auth.telegram_auth import validate_telegram_init_data
@@ -284,11 +285,7 @@ def require_permission(*permissions: str):
     ) -> User:
         from app.services.permission_service import PermissionService
 
-        ip_address = (
-            request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
-            or request.headers.get('X-Real-IP', '').strip()
-            or (request.client.host if request.client else None)
-        )
+        ip_address = get_trusted_client_ip(request)
         user_agent = request.headers.get('user-agent', '')
 
         # Extract resource_type from the first permission (section before ':')
@@ -338,7 +335,20 @@ def require_permission(*permissions: str):
                 if body:
                     import json
 
-                    details['request_body'] = json.loads(body)
+                    request_body = json.loads(body)
+                    if isinstance(request_body, dict):
+                        sensitive_keys = {
+                            'password',
+                            'current_password',
+                            'new_password',
+                            'secret',
+                            'token',
+                            'api_key',
+                            'private_key',
+                        }
+                        details['request_body_fields'] = sorted(
+                            key for key in request_body if key.lower() not in sensitive_keys
+                        )
             except Exception:
                 pass
 

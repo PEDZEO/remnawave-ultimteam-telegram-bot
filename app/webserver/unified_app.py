@@ -164,17 +164,24 @@ def create_unified_app(
 
     @asynccontextmanager
     async def unified_lifespan(fastapi_app: FastAPI):
+        from app.cabinet.routes.websocket import cabinet_ws_manager
+
         async with original_lifespan_context(fastapi_app):
             telegram_started = False
             disposable_started = False
+            websocket_started = False
             try:
                 if telegram_processor is not None:
                     await telegram_processor.start()
                     telegram_started = True
                 await disposable_email_service.start()
                 disposable_started = True
+                await cabinet_ws_manager.start()
+                websocket_started = True
                 yield
             finally:
+                if websocket_started:
+                    await cabinet_ws_manager.stop()
                 if disposable_started:
                     await disposable_email_service.stop()
                 if telegram_started:

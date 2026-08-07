@@ -107,12 +107,16 @@ class CacheService:
             return 0
 
         try:
-            keys = await self.redis_client.keys(pattern)
-            if not keys:
-                return 0
-
-            deleted = await self.redis_client.delete(*keys)
-            return int(deleted)
+            deleted = 0
+            batch: list[str | bytes] = []
+            async for key in self.redis_client.scan_iter(match=pattern, count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    deleted += int(await self.redis_client.unlink(*batch))
+                    batch.clear()
+            if batch:
+                deleted += int(await self.redis_client.unlink(*batch))
+            return deleted
         except Exception as e:
             logger.error('Ошибка удаления ключей по шаблону', pattern=pattern, error=e)
             return 0
@@ -142,7 +146,7 @@ class CacheService:
             return []
 
         try:
-            keys = await self.redis_client.keys(pattern)
+            keys = [key async for key in self.redis_client.scan_iter(match=pattern, count=500)]
             return [key.decode() if isinstance(key, bytes) else key for key in keys]
         except Exception as e:
             logger.error('Ошибка получения ключей по паттерну', pattern=pattern, error=e)

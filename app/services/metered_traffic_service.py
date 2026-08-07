@@ -158,10 +158,13 @@ class MeteredTrafficService:
 
     @staticmethod
     def _calculate_loop_delay(interval_seconds: int, elapsed_seconds: float) -> float:
-        """Keep a stable start-to-start cadence without spinning after an overrun."""
+        """Keep cadence while backing off for a full interval after an overrun."""
         interval = max(1.0, float(interval_seconds))
+        elapsed = max(0.0, elapsed_seconds)
+        if elapsed >= interval:
+            return interval
         minimum_delay = min(_METERED_TRAFFIC_MIN_LOOP_DELAY_SECONDS, interval)
-        return max(minimum_delay, interval - max(0.0, elapsed_seconds))
+        return max(minimum_delay, interval - elapsed)
 
     async def run_once(self) -> MeteredTrafficRunStats:
         stats = MeteredTrafficRunStats()

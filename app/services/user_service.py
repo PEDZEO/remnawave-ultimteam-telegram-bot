@@ -1299,19 +1299,22 @@ class UserService:
             if months is None:
                 months = settings.INACTIVE_USER_DELETE_MONTHS
 
-            inactive_users = await get_inactive_users(db, months)
             deleted_count = 0
             skipped_active_sub = 0
+            after_id = 0
+            while True:
+                inactive_users = await get_inactive_users(db, months, after_id=after_id, limit=500)
+                if not inactive_users:
+                    break
+                after_id = inactive_users[-1].id
+                for user in inactive_users:
+                    if user.subscription and user.subscription.is_active:
+                        skipped_active_sub += 1
+                        continue
 
-            for user in inactive_users:
-                # Skip users with active paid subscriptions
-                if user.subscription and user.subscription.is_active:
-                    skipped_active_sub += 1
-                    continue
-
-                success = await self.delete_user_account(db, user.id, 0)
-                if success:
-                    deleted_count += 1
+                    success = await self.delete_user_account(db, user.id, 0)
+                    if success:
+                        deleted_count += 1
 
             if skipped_active_sub > 0:
                 logger.info(

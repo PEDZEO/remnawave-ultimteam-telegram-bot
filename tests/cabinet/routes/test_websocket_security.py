@@ -26,8 +26,8 @@ def test_websocket_credentials_prefer_subprotocol_over_query_token() -> None:
     assert subprotocol == 'cabinet-auth'
 
 
-def test_websocket_credentials_keep_legacy_query_compatibility() -> None:
+def test_websocket_credentials_reject_query_token() -> None:
     token, subprotocol = _get_websocket_credentials(_websocket(query='token=legacy-token'))
 
-    assert token == 'legacy-token'
+    assert token is None
     assert subprotocol is None

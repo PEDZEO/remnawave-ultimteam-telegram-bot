@@ -1707,6 +1707,7 @@ class PartnerStatus(Enum):
 
 class User(Base):
     __tablename__ = 'users'
+    __table_args__ = (Index('ix_users_status_last_activity', 'status', 'last_activity'),)
 
     id = Column(Integer, primary_key=True, index=True)
     telegram_id = Column(BigInteger, unique=True, index=True, nullable=True)  # Nullable для email-only пользователей
@@ -3238,6 +3239,7 @@ class Ticket(Base):
 
 class TicketMessage(Base):
     __tablename__ = 'ticket_messages'
+    __table_args__ = (Index('ix_ticket_messages_ticket_created', 'ticket_id', 'created_at'),)
 
     id = Column(Integer, primary_key=True, index=True)
     ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False)

@@ -1697,14 +1697,23 @@ class MonitoringService:
             if now.hour != 3:
                 return
 
-            inactive_users = await get_inactive_users(db, settings.INACTIVE_USER_DELETE_MONTHS)
             deleted_count = 0
-
-            for user in inactive_users:
-                if not user.subscription or not user.subscription.is_active:
-                    success = await delete_user(db, user)
-                    if success:
-                        deleted_count += 1
+            after_id = 0
+            while True:
+                inactive_users = await get_inactive_users(
+                    db,
+                    settings.INACTIVE_USER_DELETE_MONTHS,
+                    after_id=after_id,
+                    limit=500,
+                )
+                if not inactive_users:
+                    break
+                after_id = inactive_users[-1].id
+                for user in inactive_users:
+                    if not user.subscription or not user.subscription.is_active:
+                        success = await delete_user(db, user)
+                        if success:
+                            deleted_count += 1
 
             if deleted_count > 0:
                 await self._log_monitoring_event(

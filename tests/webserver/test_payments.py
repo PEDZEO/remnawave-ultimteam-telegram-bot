@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,6 +31,10 @@ def reset_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'YOOKASSA_SHOP_ID', 'shop', raising=False)
     monkeypatch.setattr(settings, 'YOOKASSA_SECRET_KEY', 'key', raising=False)
     monkeypatch.setattr(settings, 'YOOKASSA_TRUSTED_PROXY_NETWORKS', '', raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_ENABLED', False, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_PUBLIC_ID', None, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_API_SECRET', None, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_WEBHOOK_PATH', '/cloudpayments', raising=False)
     monkeypatch.setattr(settings, 'WEBHOOK_URL', 'http://test', raising=False)
 
 
@@ -59,6 +66,102 @@ def _build_request(
         return {'type': 'http.request', 'body': body, 'more_body': False}
 
     return Request(scope, receive)
+
+
+def _cloudpayments_service() -> SimpleNamespace:
+    return SimpleNamespace(
+        process_cloudpayments_pay_webhook=AsyncMock(),
+        process_cloudpayments_fail_webhook=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('suffix', ['/check', '/pay', '/fail', ''])
+async def test_cloudpayments_rejects_missing_signature(
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_ENABLED', True, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_PUBLIC_ID', 'public-id', raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_API_SECRET', 'api-secret', raising=False)
+    service = _cloudpayments_service()
+    router = create_payment_router(DummyBot(), service)
+    assert router is not None
+
+    path = settings.CLOUDPAYMENTS_WEBHOOK_PATH + suffix
+    route = _get_route(router, path)
+    request = _build_request(
+        path,
+        body=b'InvoiceId=test&Amount=100.00&Status=Completed',
+        headers={'Content-Type': 'application/x-www-form-urlencoded'},
+    )
+
+    response = await route.endpoint(request)
+
+    assert response.status_code == 200
+    assert json.loads(response.body.decode('utf-8')) == {'code': 13}
+    service.process_cloudpayments_pay_webhook.assert_not_awaited()
+    service.process_cloudpayments_fail_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cloudpayments_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_ENABLED', True, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_PUBLIC_ID', 'public-id', raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_API_SECRET', 'api-secret', raising=False)
+    service = _cloudpayments_service()
+    router = create_payment_router(DummyBot(), service)
+    assert router is not None
+
+    path = settings.CLOUDPAYMENTS_WEBHOOK_PATH + '/pay'
+    route = _get_route(router, path)
+    request = _build_request(
+        path,
+        body=b'InvoiceId=test&Amount=100.00&Status=Completed',
+        headers={
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Content-HMAC': 'invalid',
+        },
+    )
+
+    response = await route.endpoint(request)
+
+    assert json.loads(response.body.decode('utf-8')) == {'code': 13}
+    service.process_cloudpayments_pay_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cloudpayments_accepts_valid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = 'api-secret'
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_ENABLED', True, raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_PUBLIC_ID', 'public-id', raising=False)
+    monkeypatch.setattr(settings, 'CLOUDPAYMENTS_API_SECRET', secret, raising=False)
+
+    async def fake_get_db():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr('app.webserver.payments.get_db', fake_get_db)
+    service = _cloudpayments_service()
+    router = create_payment_router(DummyBot(), service)
+    assert router is not None
+
+    body = b'InvoiceId=test&Amount=100.00&Status=Completed'
+    signature = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+    path = settings.CLOUDPAYMENTS_WEBHOOK_PATH + '/pay'
+    route = _get_route(router, path)
+    request = _build_request(
+        path,
+        body=body,
+        headers={
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Content-HMAC': signature,
+        },
+    )
+
+    response = await route.endpoint(request)
+
+    assert json.loads(response.body.decode('utf-8')) == {'code': 0}
+    service.process_cloudpayments_pay_webhook.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -157,8 +157,8 @@ async def test_systemic_failure_opens_circuit_before_the_whole_page_is_queued(
     ('interval_seconds', 'elapsed_seconds', 'expected_delay'),
     [
         (60, 4.5, 55.5),
-        (60, 60, 5.0),
-        (60, 180, 5.0),
+        (60, 60, 60.0),
+        (60, 180, 60.0),
         (3, 10, 3.0),
     ],
 )

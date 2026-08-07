@@ -1064,28 +1064,50 @@ async def get_users_for_promo_segment(db: AsyncSession, segment: str) -> list[Us
     return users
 
 
-async def get_inactive_users(db: AsyncSession, months: int = 3) -> list[User]:
+async def get_inactive_users(
+    db: AsyncSession,
+    months: int = 3,
+    *,
+    after_id: int = 0,
+    limit: int | None = None,
+) -> list[User]:
     threshold_date = datetime.now(UTC) - timedelta(days=months * 30)
-
-    result = await db.execute(
+    query = (
         select(User)
-        .options(
-            selectinload(User.subscription).selectinload(Subscription.tariff),
-            selectinload(User.user_promo_groups).selectinload(UserPromoGroup.promo_group),
-            selectinload(User.referrer),
-            selectinload(User.promo_group),
+        .options(selectinload(User.subscription))
+        .where(
+            User.id > after_id,
+            User.last_activity < threshold_date,
+            User.status == UserStatus.ACTIVE.value,
         )
-        .where(and_(User.last_activity < threshold_date, User.status == UserStatus.ACTIVE.value))
+        .order_by(User.id)
     )
-    users = result.scalars().all()
+    if limit is not None:
+        query = query.limit(max(1, limit))
+    return list((await db.scalars(query)).all())
 
-    # Загружаем дополнительные зависимости для всех пользователей
-    for user in users:
-        if user and user.subscription:
-            # Загружаем дополнительные зависимости для subscription
-            _ = user.subscription.is_active
 
-    return users
+async def count_inactive_users(db: AsyncSession, months: int = 3) -> tuple[int, int]:
+    """Return total inactive users and how many still have an active subscription."""
+    threshold_date = datetime.now(UTC) - timedelta(days=months * 30)
+    now = datetime.now(UTC)
+    active_subscription = and_(
+        Subscription.status == SubscriptionStatus.ACTIVE.value,
+        Subscription.end_date > now,
+    )
+    query = (
+        select(
+            func.count(User.id),
+            func.count(User.id).filter(active_subscription),
+        )
+        .outerjoin(Subscription, Subscription.user_id == User.id)
+        .where(
+            User.last_activity < threshold_date,
+            User.status == UserStatus.ACTIVE.value,
+        )
+    )
+    total, with_active_subscription = (await db.execute(query)).one()
+    return int(total or 0), int(with_active_subscription or 0)
 
 
 async def delete_user(db: AsyncSession, user: User) -> bool:

@@ -54,6 +54,15 @@ def test_auth_rate_limit_ignores_spoofed_forwarded_prefix() -> None:
     assert auth_routes._get_auth_client_ip(request) == '198.51.100.25'
 
 
+def test_auth_rate_limit_ignores_forwarded_header_from_public_client() -> None:
+    request = SimpleNamespace(
+        client=SimpleNamespace(host='203.0.113.10'),
+        headers={'x-forwarded-for': '10.10.10.10'},
+    )
+
+    assert auth_routes._get_auth_client_ip(request) == '203.0.113.10'
+
+
 @pytest.mark.asyncio
 async def test_refresh_token_is_rotated_atomically(monkeypatch: pytest.MonkeyPatch) -> None:
     old_token = 'old-refresh-token'

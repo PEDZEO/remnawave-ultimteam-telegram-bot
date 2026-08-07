@@ -2572,11 +2572,12 @@ async def clear_user_restrictions(callback: types.CallbackQuery, db_user: User, 
 async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
     UserService()
 
-    from app.database.crud.user import get_inactive_users
+    from app.database.crud.user import count_inactive_users, get_inactive_users
 
-    inactive_users = await get_inactive_users(db, settings.INACTIVE_USER_DELETE_MONTHS)
+    total_inactive, with_active_sub = await count_inactive_users(db, settings.INACTIVE_USER_DELETE_MONTHS)
+    inactive_users = await get_inactive_users(db, settings.INACTIVE_USER_DELETE_MONTHS, limit=10)
 
-    if not inactive_users:
+    if total_inactive == 0:
         await callback.message.edit_text(
             f'✅ Неактивных пользователей (более {settings.INACTIVE_USER_DELETE_MONTHS} месяцев) не найдено',
             reply_markup=types.InlineKeyboardMarkup(
@@ -2586,17 +2587,16 @@ async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: 
         await callback.answer()
         return
 
-    with_active_sub = sum(1 for u in inactive_users if u.subscription and u.subscription.is_active)
-    will_delete = len(inactive_users) - with_active_sub
+    will_delete = total_inactive - with_active_sub
 
     text = '🗑️ <b>Неактивные пользователи</b>\n'
-    text += f'Без активности более {settings.INACTIVE_USER_DELETE_MONTHS} месяцев: {len(inactive_users)}\n'
+    text += f'Без активности более {settings.INACTIVE_USER_DELETE_MONTHS} месяцев: {total_inactive}\n'
     if with_active_sub > 0:
         text += f'🛡️ С активной подпиской (не будут удалены): {with_active_sub}\n'
         text += f'🗑️ Будет удалено: {will_delete}\n'
     text += '\n'
 
-    for user in inactive_users[:10]:
+    for user in inactive_users:
         if user.telegram_id:
             user_link = f'<a href="tg://user?id={user.telegram_id}">{user.full_name}</a>'
             user_id_display = user.telegram_id
@@ -2612,8 +2612,8 @@ async def show_inactive_users(callback: types.CallbackQuery, db_user: User, db: 
         )
         text += f'📅 {last_activity_display}\n\n'
 
-    if len(inactive_users) > 10:
-        text += f'... и еще {len(inactive_users) - 10} пользователей'
+    if total_inactive > 10:
+        text += f'... и еще {total_inactive - 10} пользователей'
 
     keyboard = [
         [types.InlineKeyboardButton(text='🗑️ Очистить всех', callback_data='admin_cleanup_inactive')],
