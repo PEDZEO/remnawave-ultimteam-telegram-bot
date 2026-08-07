@@ -724,7 +724,7 @@ async def update_ticket_status(
         created_at=ticket.created_at,
         updated_at=ticket.updated_at or ticket.created_at,
         closed_at=ticket.closed_at,
-        is_reply_blocked=ticket.is_reply_blocked if hasattr(ticket, 'is_reply_blocked') else False,
+        is_reply_blocked=ticket.is_user_reply_blocked,
         user=user_info,
         messages=messages_response,
     )
@@ -779,7 +779,7 @@ async def update_ticket_priority(
         created_at=ticket.created_at,
         updated_at=ticket.updated_at or ticket.created_at,
         closed_at=ticket.closed_at,
-        is_reply_blocked=ticket.is_reply_blocked if hasattr(ticket, 'is_reply_blocked') else False,
+        is_reply_blocked=ticket.is_user_reply_blocked,
         user=user_info,
         messages=messages_response,
     )

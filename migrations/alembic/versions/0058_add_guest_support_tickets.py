@@ -35,54 +35,66 @@ def _checks(table_name: str) -> set[str]:
 
 def upgrade() -> None:
     ticket_columns = _columns('tickets')
-    if not ticket_columns['user_id']['nullable']:
-        op.alter_column('tickets', 'user_id', existing_type=sa.Integer(), nullable=True)
-    if 'guest_name' not in ticket_columns:
-        op.add_column('tickets', sa.Column('guest_name', sa.String(length=120), nullable=True))
-    if 'guest_contact' not in ticket_columns:
-        op.add_column('tickets', sa.Column('guest_contact', sa.String(length=255), nullable=True))
-    if 'guest_token_hash' not in ticket_columns:
-        op.add_column('tickets', sa.Column('guest_token_hash', sa.String(length=64), nullable=True))
-
     ticket_indexes = _indexes('tickets')
-    if 'ix_tickets_user_id' not in ticket_indexes:
-        op.create_index('ix_tickets_user_id', 'tickets', ['user_id'], unique=False)
-    if 'ix_tickets_guest_token_hash' not in ticket_indexes:
-        op.create_index('ix_tickets_guest_token_hash', 'tickets', ['guest_token_hash'], unique=True)
+    ticket_checks = _checks('tickets')
+    # batch_alter_table is required for SQLite, which cannot add constraints or
+    # change column nullability with ALTER TABLE. It emits regular ALTERs on
+    # databases that support them.
+    with op.batch_alter_table('tickets') as batch_op:
+        if not ticket_columns['user_id']['nullable']:
+            batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=True)
+        if 'guest_name' not in ticket_columns:
+            batch_op.add_column(sa.Column('guest_name', sa.String(length=120), nullable=True))
+        if 'guest_contact' not in ticket_columns:
+            batch_op.add_column(sa.Column('guest_contact', sa.String(length=255), nullable=True))
+        if 'guest_token_hash' not in ticket_columns:
+            batch_op.add_column(sa.Column('guest_token_hash', sa.String(length=64), nullable=True))
+        if 'ix_tickets_user_id' not in ticket_indexes:
+            batch_op.create_index('ix_tickets_user_id', ['user_id'], unique=False)
+        if 'ix_tickets_guest_token_hash' not in ticket_indexes:
+            batch_op.create_index('ix_tickets_guest_token_hash', ['guest_token_hash'], unique=True)
+        if 'ck_tickets_owner_present' not in ticket_checks:
+            batch_op.create_check_constraint(
+                'ck_tickets_owner_present',
+                'user_id IS NOT NULL OR guest_token_hash IS NOT NULL',
+            )
 
     message_columns = _columns('ticket_messages')
-    if not message_columns['user_id']['nullable']:
-        op.alter_column('ticket_messages', 'user_id', existing_type=sa.Integer(), nullable=True)
-    if 'ix_ticket_messages_user_id' not in _indexes('ticket_messages'):
-        op.create_index('ix_ticket_messages_user_id', 'ticket_messages', ['user_id'], unique=False)
-
-    if 'ck_tickets_owner_present' not in _checks('tickets'):
-        op.create_check_constraint(
-            'ck_tickets_owner_present',
-            'tickets',
-            'user_id IS NOT NULL OR guest_token_hash IS NOT NULL',
-        )
+    message_indexes = _indexes('ticket_messages')
+    with op.batch_alter_table('ticket_messages') as batch_op:
+        if not message_columns['user_id']['nullable']:
+            batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=True)
+        if 'ix_ticket_messages_user_id' not in message_indexes:
+            batch_op.create_index('ix_ticket_messages_user_id', ['user_id'], unique=False)
 
 
 def downgrade() -> None:
     # Guest tickets cannot satisfy the old non-null foreign keys. Removing them
     # makes the downgrade deterministic instead of failing midway.
-    op.execute("DELETE FROM tickets WHERE user_id IS NULL")
-    if 'ck_tickets_owner_present' in _checks('tickets'):
-        op.drop_constraint('ck_tickets_owner_present', 'tickets', type_='check')
-    if 'ix_ticket_messages_user_id' in _indexes('ticket_messages'):
-        op.drop_index('ix_ticket_messages_user_id', table_name='ticket_messages')
-    if _columns('ticket_messages')['user_id']['nullable']:
-        op.alter_column('ticket_messages', 'user_id', existing_type=sa.Integer(), nullable=False)
+    op.execute('DELETE FROM tickets WHERE user_id IS NULL')
+    # SQLite does not enforce foreign keys unless PRAGMA foreign_keys is enabled,
+    # so remove orphaned guest messages explicitly before restoring NOT NULL.
+    op.execute('DELETE FROM ticket_messages WHERE user_id IS NULL')
+    message_columns = _columns('ticket_messages')
+    message_indexes = _indexes('ticket_messages')
+    with op.batch_alter_table('ticket_messages') as batch_op:
+        if 'ix_ticket_messages_user_id' in message_indexes:
+            batch_op.drop_index('ix_ticket_messages_user_id')
+        if message_columns['user_id']['nullable']:
+            batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=False)
 
     ticket_indexes = _indexes('tickets')
-    if 'ix_tickets_guest_token_hash' in ticket_indexes:
-        op.drop_index('ix_tickets_guest_token_hash', table_name='tickets')
-    if 'ix_tickets_user_id' in ticket_indexes:
-        op.drop_index('ix_tickets_user_id', table_name='tickets')
     ticket_columns = _columns('tickets')
-    for column_name in ('guest_token_hash', 'guest_contact', 'guest_name'):
-        if column_name in ticket_columns:
-            op.drop_column('tickets', column_name)
-    if _columns('tickets')['user_id']['nullable']:
-        op.alter_column('tickets', 'user_id', existing_type=sa.Integer(), nullable=False)
+    ticket_checks = _checks('tickets')
+    with op.batch_alter_table('tickets') as batch_op:
+        if 'ck_tickets_owner_present' in ticket_checks:
+            batch_op.drop_constraint('ck_tickets_owner_present', type_='check')
+        if 'ix_tickets_guest_token_hash' in ticket_indexes:
+            batch_op.drop_index('ix_tickets_guest_token_hash')
+        if 'ix_tickets_user_id' in ticket_indexes:
+            batch_op.drop_index('ix_tickets_user_id')
+        for column_name in ('guest_token_hash', 'guest_contact', 'guest_name'):
+            if column_name in ticket_columns:
+                batch_op.drop_column(column_name)
+        if ticket_columns['user_id']['nullable']:
+            batch_op.alter_column('user_id', existing_type=sa.Integer(), nullable=False)
