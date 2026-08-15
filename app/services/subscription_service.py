@@ -422,7 +422,6 @@ class SubscriptionService:
                 update_kwargs = dict(
                     uuid=user.remnawave_uuid,
                     status=UserStatus.ACTIVE if is_actually_active else UserStatus.DISABLED,
-                    expire_at=subscription.end_date,
                     traffic_limit_bytes=panel_traffic_limit_bytes(subscription.traffic_limit_gb),
                     traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
                     email=user.email,  # Обновляем email в панели RemnaWave
@@ -434,6 +433,13 @@ class SubscriptionService:
                         user_id=user.id,
                     ),
                 )
+
+                # RemnaWave rejects PATCH requests containing an expiration in the
+                # past.  The status above is enough to disable an expired user, and
+                # omitting expire_at lets traffic top-up cleanup finish instead of
+                # rolling back and retrying the same invalid request every minute.
+                if subscription.end_date > current_time:
+                    update_kwargs['expire_at'] = subscription.end_date
 
                 if subscription.connected_squads or is_metered_traffic_enabled():
                     update_kwargs['active_internal_squads'] = subscription.connected_squads
