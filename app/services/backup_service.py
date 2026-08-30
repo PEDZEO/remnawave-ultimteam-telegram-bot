@@ -227,6 +227,10 @@ class BackupService:
             'payment_method_promo_groups': payment_method_promo_groups,
         }
 
+    def _ensure_backup_directory(self) -> None:
+        """Recreate the backup directory if it was removed while the bot was running."""
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+
     def _load_settings(self) -> BackupSettings:
         return BackupSettings(
             auto_backup_enabled=os.getenv('BACKUP_AUTO_ENABLED', 'true').lower() == 'true',
@@ -315,6 +319,8 @@ class BackupService:
         try:
             logger.info('📄 Начинаем создание бекапа...')
 
+            self._ensure_backup_directory()
+
             if include_logs is None:
                 include_logs = self._settings.include_logs
 
@@ -356,6 +362,7 @@ class BackupService:
                     await meta_file.write(json_lib.dumps(metadata, ensure_ascii=False, indent=2))
 
                 mode = 'w:gz' if compress else 'w'
+                self._ensure_backup_directory()
                 with tarfile.open(backup_path, mode) as tar:
                     for item in staging_dir.iterdir():
                         tar.add(item, arcname=item.name)
@@ -1573,6 +1580,7 @@ class BackupService:
         backups = []
 
         try:
+            self._ensure_backup_directory()
             for backup_file in sorted(self.backup_dir.glob('backup_*'), reverse=True):
                 if not backup_file.is_file():
                     continue
