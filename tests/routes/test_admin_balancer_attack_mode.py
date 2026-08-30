@@ -18,6 +18,28 @@ async def test_get_attack_mode_uses_protected_admin_proxy(monkeypatch: pytest.Mo
     proxy.assert_awaited_once_with('GET', '/admin/attack-mode', requires_admin=True)
 
 
+async def test_get_hosts_uses_protected_admin_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = AsyncMock(return_value={'status': 'ok', 'hosts': []})
+    monkeypatch.setattr(admin_balancer, '_proxy_balancer_json', proxy)
+
+    result = await admin_balancer.get_balancer_hosts(admin=None)  # type: ignore[arg-type]
+
+    assert result == {'status': 'ok', 'hosts': []}
+    proxy.assert_awaited_once_with('GET', '/admin/hosts', requires_admin=True)
+
+
+async def test_get_health_metrics_uses_protected_admin_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = AsyncMock(return_value={'node-a': {'lastRttMs': 25, 'lossPercent': 0}})
+    monkeypatch.setattr(admin_balancer, '_proxy_balancer_json', proxy)
+
+    result = await admin_balancer.get_balancer_health_metrics(admin=None)  # type: ignore[arg-type]
+
+    assert result == {'node-a': {'lastRttMs': 25, 'lossPercent': 0}}
+    proxy.assert_awaited_once_with('GET', '/admin/health-metrics', requires_admin=True)
+
+
 async def test_enable_attack_mode_forwards_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     proxy = AsyncMock(return_value={'status': 'ok'})
     monkeypatch.setattr(admin_balancer, '_proxy_balancer_json', proxy)
