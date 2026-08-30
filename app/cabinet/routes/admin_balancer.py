@@ -170,6 +170,14 @@ async def get_balancer_groups(
     return await _proxy_balancer_json('GET', '/admin/groups', requires_admin=True)
 
 
+@router.get('/hosts')
+async def get_balancer_hosts(
+    admin: User = Depends(get_current_admin_user),
+) -> Any:
+    """Return the sanitized Remnawave host catalog exposed by the balancer."""
+    return await _proxy_balancer_json('GET', '/admin/hosts', requires_admin=True)
+
+
 @router.put('/groups')
 async def update_balancer_groups(
     payload: dict[str, Any],
