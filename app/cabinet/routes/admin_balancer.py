@@ -134,6 +134,14 @@ async def get_balancer_node_stats(
     return await _proxy_balancer_json('GET', '/admin/node-stats', requires_admin=True)
 
 
+@router.get('/health-metrics')
+async def get_balancer_health_metrics(
+    admin: User = Depends(get_current_admin_user),
+) -> Any:
+    """Return bounded per-node quality metrics collected by the balancer."""
+    return await _proxy_balancer_json('GET', '/admin/health-metrics', requires_admin=True)
+
+
 @router.get('/debug/token')
 async def get_balancer_token_debug(
     token: str = Query(min_length=3, max_length=256),
