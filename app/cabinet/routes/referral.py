@@ -1,6 +1,7 @@
 """Referral program routes for cabinet."""
 
 import math
+from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, Depends, Query
@@ -33,6 +34,14 @@ from ..schemas.referral import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix='/referral', tags=['Cabinet Referral'])
+
+
+def _build_telegram_referral_link(referral_code: str) -> str:
+    bot_username = (settings.get_bot_username() or '').strip().lstrip('@')
+    if not referral_code or not bot_username:
+        return ''
+    safe_code = quote(referral_code, safe='')
+    return f'https://t.me/{bot_username}?start={safe_code}'
 
 
 @router.get('', response_model=ReferralInfoResponse)
@@ -97,6 +106,7 @@ async def get_referral_info(
     return ReferralInfoResponse(
         referral_code=user.referral_code or '',
         referral_link=referral_link,
+        telegram_referral_link=_build_telegram_referral_link(user.referral_code or ''),
         total_referrals=total_referrals,
         active_referrals=active_referrals,
         total_earnings_kopeks=total_earnings,
