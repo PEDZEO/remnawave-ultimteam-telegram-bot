@@ -1097,7 +1097,7 @@ class MiniAppSubscriptionPurchaseService:
             extension_base_date = now
             if subscription.end_date and subscription.end_date > now:
                 extension_base_date = subscription.end_date
-            else:
+            elif not subscription.start_date:
                 subscription.start_date = now
 
             subscription.end_date = extension_base_date + timedelta(days=pricing.selection.period.days) + bonus_period

@@ -223,4 +223,5 @@ def test_fast_path_keeps_exhaustion_timestamp_stable(metered_mode: None) -> None
     service._apply_fast_path(subscription, panel_user, now=datetime.now(UTC))
 
     assert subscription.metered_access_blocked_at == blocked_at
-    assert subscription.traffic_used_gb == 101.0
+    assert subscription.traffic_used_gb == 100.0
+    assert subscription.metered_traffic_baseline_bytes == BYTES_PER_GB

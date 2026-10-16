@@ -11,6 +11,7 @@ from app.external.remnawave_api import RemnaWaveAPI, RemnaWaveAPIError, RemnaWav
 from app.services.metered_traffic_policy import (
     is_metered_traffic_enabled,
     panel_traffic_limit_bytes,
+    rebase_metered_counter,
     reset_metered_cycle,
     restore_metered_access_if_available,
 )
@@ -76,6 +77,10 @@ def get_traffic_reset_strategy(tariff=None):
         TrafficLimitStrategy: Стратегия сброса трафика для RemnaWave API.
     """
     from app.config import settings
+
+    if is_metered_traffic_enabled():
+        # The bot owns connection-anniversary cycles for special-server quotas.
+        return TrafficLimitStrategy.NO_RESET
 
     strategy_mapping = {'NO_RESET': 'NO_RESET', 'DAY': 'DAY', 'WEEK': 'WEEK', 'MONTH': 'MONTH'}
 
@@ -414,7 +419,7 @@ class SubscriptionService:
 
             user_tag = self._resolve_user_tag(subscription)
 
-            restore_metered_access_if_available(subscription)
+            metered_access_restored = restore_metered_access_if_available(subscription)
 
             async with self.get_api_client() as api:
                 hwid_limit = resolve_hwid_device_limit_for_payload(subscription)
@@ -450,7 +455,16 @@ class SubscriptionService:
                 if hwid_limit is not None:
                     update_kwargs['hwid_device_limit'] = hwid_limit
 
+                update_started_at = datetime.now(UTC)
                 updated_user = await api.update_user(**update_kwargs)
+
+                if metered_access_restored and is_metered_traffic_enabled():
+                    rebase_metered_counter(
+                        subscription,
+                        panel_counter_bytes=updated_user.used_traffic_bytes,
+                        sampled_at=update_started_at,
+                        panel_reset_at=updated_user.last_traffic_reset_at,
+                    )
 
                 if reset_traffic:
                     if is_metered_traffic_enabled():

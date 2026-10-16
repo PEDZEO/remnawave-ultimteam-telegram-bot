@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 from aiogram import Bot
@@ -18,10 +19,11 @@ from app.config import settings
 from app.database.advisory_lock import distributed_job_lock
 from app.database.database import AsyncSessionLocal
 from app.database.models import Subscription, SubscriptionStatus, Tariff, User
-from app.external.remnawave_api import RemnaWaveAPIError, RemnaWaveUser, UserStatus
+from app.external.remnawave_api import RemnaWaveAPIError, RemnaWaveUser, TrafficLimitStrategy, UserStatus
 from app.localization.texts import get_texts
 from app.services.metered_traffic_policy import (
     BYTES_PER_GB,
+    METERED_TRAFFIC_TIMEZONE,
     block_metered_access,
     build_subscription_squads,
     calculate_metered_usage,
@@ -32,8 +34,13 @@ from app.services.metered_traffic_policy import (
     get_metered_node_uuids,
     get_metered_squad_uuid,
     get_metered_squad_uuids,
+    get_metered_traffic_period,
     get_metered_warning_percent,
     is_metered_traffic_enabled,
+    metered_cycle_is_due,
+    metered_sample_is_stale,
+    rebase_metered_counter,
+    refresh_metered_usage,
     restore_metered_access_if_available,
     subscription_allows_special_servers,
 )
@@ -57,6 +64,7 @@ class MeteredTrafficRunStats:
     candidates: int = 0
     checked: int = 0
     initialized: int = 0
+    renewed: int = 0
     warned: int = 0
     blocked: int = 0
     restored: int = 0
@@ -110,6 +118,8 @@ class MeteredTrafficService:
             'node_uuids': get_metered_node_uuids(),
             'node_multipliers': get_metered_node_multipliers(),
             'interval_seconds': get_metered_check_interval_seconds(),
+            'reset_mode': 'MONTH',
+            'reset_timezone': METERED_TRAFFIC_TIMEZONE,
             'last_run_at': self._last_run_at.isoformat() if self._last_run_at else None,
             'last_error': self._last_error,
             'last_stats': asdict(self._last_stats),
@@ -183,10 +193,11 @@ class MeteredTrafficService:
                     self._last_topology_errors = await self._validate_node_multipliers(api)
                     if self._last_topology_errors:
                         raise RuntimeError('; '.join(self._last_topology_errors))
+                    sampled_at = datetime.now(UTC)
                     async for panel_users in self._iter_panel_user_pages(api):
                         stats.pages += 1
                         stats.scanned += len(panel_users)
-                        fast_path = await self._process_panel_users_fast_path(panel_users)
+                        fast_path = await self._process_panel_users_fast_path(panel_users, sampled_at=sampled_at)
                         stats.candidates += fast_path.candidates
                         stats.deferred += fast_path.deferred
                         self._record_results(stats, fast_path.results)
@@ -194,6 +205,7 @@ class MeteredTrafficService:
                         page_result = await self._process_panel_users_concurrently(
                             api,
                             fast_path.slow_users,
+                            sampled_at=sampled_at,
                         )
                         self._record_results(stats, page_result.results)
 
@@ -205,6 +217,7 @@ class MeteredTrafficService:
                                 deferred=page_result.deferred,
                             )
                             break
+                        sampled_at = datetime.now(UTC)
             except Exception as error:
                 stats.errors += 1
                 self._last_error = str(error)
@@ -240,7 +253,7 @@ class MeteredTrafficService:
             if result is None:
                 continue
             stats.checked += 1
-            for key in ('initialized', 'warned', 'blocked', 'restored', 'reconciled'):
+            for key in ('initialized', 'renewed', 'warned', 'blocked', 'restored', 'reconciled'):
                 if result.get(key):
                     setattr(stats, key, getattr(stats, key) + 1)
 
@@ -299,6 +312,8 @@ class MeteredTrafficService:
     async def _process_panel_users_fast_path(
         self,
         panel_users: list[RemnaWaveUser],
+        *,
+        sampled_at: datetime | None = None,
     ) -> _MeteredTrafficFastPathResult:
         """Update healthy subscriptions in one short transaction per panel page."""
         if not panel_users:
@@ -340,17 +355,21 @@ class MeteredTrafficService:
 
             results: list[tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]] = []
             slow_users: list[RemnaWaveUser] = []
+            stale_samples = 0
             for panel_user in panel_users:
                 subscription = subscriptions_by_uuid.get(panel_user.uuid)
                 if subscription is None:
                     continue
-                if self._requires_individual_processing(subscription, panel_user):
+                if metered_sample_is_stale(subscription, sampled_at):
+                    stale_samples += 1
+                    continue
+                if self._requires_individual_processing(subscription, panel_user, now=now):
                     slow_users.append(panel_user)
                     continue
                 results.append(
                     (
                         panel_user,
-                        self._apply_fast_path(subscription, panel_user, now=now),
+                        self._apply_fast_path(subscription, panel_user, now=now, sampled_at=sampled_at),
                         None,
                     )
                 )
@@ -361,7 +380,7 @@ class MeteredTrafficService:
             results=results,
             slow_users=slow_users,
             candidates=len(active_uuids),
-            deferred=max(0, len(active_uuids) - len(subscriptions)),
+            deferred=max(0, len(active_uuids) - len(subscriptions)) + stale_samples,
         )
 
     @staticmethod
@@ -387,15 +406,25 @@ class MeteredTrafficService:
         self,
         subscription: Subscription,
         panel_user: RemnaWaveUser,
+        *,
+        now: datetime | None = None,
     ) -> bool:
         panel_squads = extract_squad_uuids(panel_user.active_internal_squads)
         stored_squads = extract_squad_uuids(subscription.connected_squads)
         if panel_user.traffic_limit_bytes != 0 or panel_user.status == UserStatus.LIMITED:
             return True
+        if (
+            getattr(panel_user, 'traffic_limit_strategy', TrafficLimitStrategy.NO_RESET)
+            != TrafficLimitStrategy.NO_RESET
+        ):
+            return True
 
         if not subscription_allows_special_servers(subscription):
             desired_squads = build_subscription_squads(subscription)
             return set(panel_squads) != set(desired_squads)
+
+        if metered_cycle_is_due(subscription, now=now):
+            return True
 
         if set(panel_squads) != set(stored_squads):
             return True
@@ -412,10 +441,17 @@ class MeteredTrafficService:
             panel_counter_bytes=panel_counter,
             baseline_bytes=subscription.metered_traffic_baseline_bytes,
             last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
+            counter_reset_detected=bool(
+                getattr(panel_user, 'last_traffic_reset_at', None)
+                and subscription.metered_traffic_last_checked_at
+                and subscription.metered_traffic_last_checked_at < panel_user.last_traffic_reset_at
+            ),
         )
         limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
         if limit_bytes <= 0:
             return is_blocked or not has_all_metered_squads
+        if is_blocked and float(subscription.traffic_used_gb or 0.0) < subscription.traffic_limit_gb:
+            return True
 
         if used_bytes >= limit_bytes:
             had_entitlement = any(squad_uuid in stored_squads for squad_uuid in metered_squads) or is_blocked
@@ -434,9 +470,11 @@ class MeteredTrafficService:
         panel_user: RemnaWaveUser,
         *,
         now: datetime,
+        sampled_at: datetime | None = None,
     ) -> dict[str, bool]:
         result = {
             'initialized': False,
+            'renewed': False,
             'warned': False,
             'blocked': False,
             'restored': False,
@@ -448,27 +486,13 @@ class MeteredTrafficService:
             disable_metered_access(subscription, panel_counter_bytes=panel_counter)
             return result
 
-        if subscription.metered_traffic_initialized_at is None:
-            subscription.metered_traffic_baseline_bytes = panel_counter
-            subscription.metered_traffic_last_counter_bytes = panel_counter
-            subscription.metered_traffic_initialized_at = now
-            subscription.metered_traffic_last_checked_at = now
-            subscription.metered_warning_percent = 0
-            subscription.traffic_used_gb = 0.0
-            result['initialized'] = True
-            return result
-
-        used_bytes, baseline, counter_was_reset = calculate_metered_usage(
+        used_bytes, result['initialized'], result['renewed'] = refresh_metered_usage(
+            subscription,
             panel_counter_bytes=panel_counter,
-            baseline_bytes=subscription.metered_traffic_baseline_bytes,
-            last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
+            now=now,
+            panel_reset_at=getattr(panel_user, 'last_traffic_reset_at', None),
+            sampled_at=sampled_at,
         )
-        subscription.metered_traffic_baseline_bytes = baseline
-        subscription.metered_traffic_last_counter_bytes = panel_counter
-        subscription.metered_traffic_last_checked_at = now
-        subscription.traffic_used_gb = round(used_bytes / BYTES_PER_GB, 6)
-        if counter_was_reset:
-            subscription.metered_warning_percent = 0
 
         limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
         if limit_bytes > 0 and used_bytes >= limit_bytes and subscription.metered_access_blocked:
@@ -480,13 +504,17 @@ class MeteredTrafficService:
         self,
         api,
         panel_users: list[RemnaWaveUser],
+        *,
+        sampled_at: datetime | None = None,
     ) -> _MeteredTrafficPageResult:
         async def process_one(
             panel_user: RemnaWaveUser,
         ) -> tuple[RemnaWaveUser, dict[str, bool] | None, Exception | None]:
             try:
                 async with asyncio.timeout(_METERED_TRAFFIC_USER_TIMEOUT_SECONDS):
-                    return panel_user, await self._process_panel_user(api, panel_user), None
+                    if sampled_at is None:
+                        return panel_user, await self._process_panel_user(api, panel_user), None
+                    return panel_user, await self._process_panel_user(api, panel_user, sampled_at=sampled_at), None
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -517,11 +545,18 @@ class MeteredTrafficService:
             return error.status_code is None or error.status_code == 429 or error.status_code >= 500
         return False
 
-    async def _process_panel_user(self, api, panel_user: RemnaWaveUser) -> dict[str, bool] | None:
+    async def _process_panel_user(
+        self,
+        api,
+        panel_user: RemnaWaveUser,
+        *,
+        sampled_at: datetime | None = None,
+    ) -> dict[str, bool] | None:
         now = datetime.now(UTC)
         notification: tuple[User, Subscription, bool, int] | None = None
         result = {
             'initialized': False,
+            'renewed': False,
             'warned': False,
             'blocked': False,
             'restored': False,
@@ -541,6 +576,8 @@ class MeteredTrafficService:
                 return None
             if subscription.end_date <= now or subscription.actual_status not in {'active', 'trial'}:
                 return None
+            if metered_sample_is_stale(subscription, sampled_at):
+                return None
 
             user = subscription.user
             panel_counter = max(0, int(panel_user.used_traffic_bytes or 0))
@@ -549,12 +586,18 @@ class MeteredTrafficService:
                 desired_squads = build_subscription_squads(subscription)
                 subscription.connected_squads = desired_squads
                 current_squads = extract_squad_uuids(panel_user.active_internal_squads)
-                needs_reconcile = set(current_squads) != set(desired_squads) or panel_user.traffic_limit_bytes != 0
+                needs_reconcile = (
+                    set(current_squads) != set(desired_squads)
+                    or panel_user.traffic_limit_bytes != 0
+                    or getattr(panel_user, 'traffic_limit_strategy', TrafficLimitStrategy.NO_RESET)
+                    != TrafficLimitStrategy.NO_RESET
+                )
 
                 if needs_reconcile:
                     await api.update_user(
                         uuid=panel_user.uuid,
                         traffic_limit_bytes=0,
+                        traffic_limit_strategy=TrafficLimitStrategy.NO_RESET,
                         active_internal_squads=desired_squads,
                     )
                     result['reconciled'] = True
@@ -566,29 +609,13 @@ class MeteredTrafficService:
                 await db.commit()
                 return result
 
-            initialized = subscription.metered_traffic_initialized_at is not None
-
-            if not initialized:
-                subscription.metered_traffic_baseline_bytes = panel_counter
-                subscription.metered_traffic_last_counter_bytes = panel_counter
-                subscription.metered_traffic_initialized_at = now
-                subscription.metered_traffic_last_checked_at = now
-                subscription.metered_warning_percent = 0
-                subscription.traffic_used_gb = 0.0
-                used_bytes = 0
-                result['initialized'] = True
-            else:
-                used_bytes, baseline, counter_was_reset = calculate_metered_usage(
-                    panel_counter_bytes=panel_counter,
-                    baseline_bytes=subscription.metered_traffic_baseline_bytes,
-                    last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
-                )
-                subscription.metered_traffic_baseline_bytes = baseline
-                subscription.metered_traffic_last_counter_bytes = panel_counter
-                subscription.metered_traffic_last_checked_at = now
-                subscription.traffic_used_gb = round(used_bytes / BYTES_PER_GB, 6)
-                if counter_was_reset:
-                    subscription.metered_warning_percent = 0
+            used_bytes, result['initialized'], result['renewed'] = refresh_metered_usage(
+                subscription,
+                panel_counter_bytes=panel_counter,
+                now=now,
+                panel_reset_at=getattr(panel_user, 'last_traffic_reset_at', None),
+                sampled_at=sampled_at,
+            )
 
             limit_gb = max(0, int(subscription.traffic_limit_gb or 0))
             limit_bytes = limit_gb * BYTES_PER_GB
@@ -617,14 +644,28 @@ class MeteredTrafficService:
 
             desired_squads = extract_squad_uuids(subscription.connected_squads)
             current_squads = extract_squad_uuids(panel_user.active_internal_squads)
-            needs_reconcile = set(current_squads) != set(desired_squads) or panel_user.traffic_limit_bytes != 0
+            needs_reconcile = (
+                set(current_squads) != set(desired_squads)
+                or panel_user.traffic_limit_bytes != 0
+                or getattr(panel_user, 'traffic_limit_strategy', TrafficLimitStrategy.NO_RESET)
+                != TrafficLimitStrategy.NO_RESET
+            )
 
             if needs_reconcile:
-                await api.update_user(
+                update_started_at = datetime.now(UTC)
+                updated_panel_user = await api.update_user(
                     uuid=panel_user.uuid,
                     traffic_limit_bytes=0,
+                    traffic_limit_strategy=TrafficLimitStrategy.NO_RESET,
                     active_internal_squads=desired_squads,
                 )
+                if transition_restored:
+                    rebase_metered_counter(
+                        subscription,
+                        panel_counter_bytes=updated_panel_user.used_traffic_bytes,
+                        sampled_at=update_started_at,
+                        panel_reset_at=updated_panel_user.last_traffic_reset_at,
+                    )
                 result['reconciled'] = True
 
             if panel_user.status == UserStatus.LIMITED:
@@ -669,11 +710,14 @@ class MeteredTrafficService:
         used_gb_value = max(0.0, float(subscription.traffic_used_gb or 0.0))
         limit_gb_value = max(0, int(subscription.traffic_limit_gb or 0))
         remaining_gb_value = max(0.0, limit_gb_value - used_gb_value)
+        _, next_reset_at = get_metered_traffic_period(subscription)
+        reset_date = next_reset_at.astimezone(ZoneInfo(METERED_TRAFFIC_TIMEZONE)).strftime('%d.%m.%Y %H:%M')
         values = {
             'percent': actual_percent,
             'used_gb': self._format_gb(used_gb_value),
             'limit_gb': self._format_gb(float(limit_gb_value)),
             'remaining_gb': self._format_gb(remaining_gb_value),
+            'reset_date': reset_date,
         }
 
         if str(user.language or '').lower().startswith('ru'):
@@ -703,6 +747,17 @@ class MeteredTrafficService:
                 f'{values["used_gb"]} из {values["limit_gb"]} ГБ.'
                 if exhausted
                 else f'📊 <b>Трафик почти закончился</b>\n\nОсталось {values["remaining_gb"]} ГБ.'
+            )
+
+        if str(user.language or '').lower().startswith('ru'):
+            message += (
+                f'\n\nПакет обновится {reset_date} МСК, ежемесячно в дату подключения. '
+                'При активной подписке доступ к спецсерверам восстановится автоматически.'
+            )
+        else:
+            message += (
+                f'\n\nTraffic renews on {reset_date} Moscow time, monthly on your connection date. '
+                'Special-server access is restored automatically with an active subscription.'
             )
 
         texts = get_texts(user.language)

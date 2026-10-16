@@ -11,6 +11,7 @@ import structlog
 from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database.advisory_lock import distributed_job_lock
@@ -28,6 +29,7 @@ from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
 )
+from app.services.traffic_purchase_service import remove_expired_traffic_purchases
 
 
 logger = structlog.get_logger(__name__)
@@ -365,10 +367,9 @@ class DailySubscriptionService:
                             subscriptions_to_update[purchase.subscription_id].append(purchase)
 
                         # Удаляем истекшие докупки и обновляем подписки
-                        for subscription_id, purchases in subscriptions_to_update.items():
+                        for subscription_id in subscriptions_to_update:
                             try:
-                                await self._reset_subscription_traffic(db, subscription_id, purchases)
-                                stats['reset'] += len(purchases)
+                                stats['reset'] += await self._reset_subscription_traffic(db, subscription_id)
                             except Exception as e:
                                 await db.rollback()
                                 logger.error(
@@ -388,108 +389,36 @@ class DailySubscriptionService:
 
         return stats
 
-    async def _reset_subscription_traffic(self, db: AsyncSession, subscription_id: int, expired_purchases: list):
+    async def _reset_subscription_traffic(self, db: AsyncSession, subscription_id: int) -> int:
         """Сбрасывает истекшие докупки трафика у подписки."""
-        from app.database.models import TrafficPurchase
-
         # Получаем подписку
-        subscription_query = select(Subscription).where(Subscription.id == subscription_id).with_for_update()
+        subscription_query = (
+            select(Subscription)
+            .options(selectinload(Subscription.tariff))
+            .where(Subscription.id == subscription_id)
+            .with_for_update()
+        )
         subscription_result = await db.execute(subscription_query)
         subscription = subscription_result.scalar_one_or_none()
 
         if not subscription:
-            return
-
-        # Считаем сколько ГБ нужно убрать
-        total_expired_gb = sum(p.traffic_gb for p in expired_purchases)
-        old_limit = subscription.traffic_limit_gb or 0
-        old_purchased = subscription.purchased_traffic_gb or 0
+            return 0
 
         now = datetime.now(UTC)
-        remaining_query = (
-            select(TrafficPurchase)
-            .where(TrafficPurchase.subscription_id == subscription_id)
-            .where(TrafficPurchase.expires_at > now)
-        )
-        remaining_result = await db.execute(remaining_query)
-        remaining_purchases = remaining_result.scalars().all()
-        remaining_purchased_gb = sum(p.traffic_gb for p in remaining_purchases)
-        actual_purchased_before_reset = total_expired_gb + remaining_purchased_gb
-
-        if actual_purchased_before_reset != old_purchased:
-            logger.warning(
-                'Purchased traffic counter mismatch; recalculating from TrafficPurchase rows',
-                subscription_id=subscription.id,
-                old_purchased=old_purchased,
-                actual_purchased_before_reset=actual_purchased_before_reset,
-                expired_gb=total_expired_gb,
-                remaining_gb=remaining_purchased_gb,
-            )
-
-        # КРИТИЧЕСКАЯ ПРОВЕРКА: защита от некорректных данных
-        if total_expired_gb > old_purchased:
-            logger.error(
-                '⚠️ ОШИБКА ДАННЫХ: подписка истекает ГБ, но purchased_traffic_gb ГБ. Сбрасываем только ГБ.',
-                subscription_id=subscription.id,
-                total_expired_gb=total_expired_gb,
-                old_purchased=old_purchased,
-                old_purchased_2=old_purchased,
-            )
-
-        # Рассчитываем базовый лимит тарифа (без докупок)
-        base_limit = old_limit - actual_purchased_before_reset
-
-        # Получаем базовый лимит из тарифа для проверки
-        if subscription.tariff_id:
-            from app.database.crud.tariff import get_tariff_by_id
-
-            tariff = await get_tariff_by_id(db, subscription.tariff_id)
-            if tariff:
-                tariff_base_limit = tariff.traffic_limit_gb or 0
-                # Проверяем, что базовый лимит не отрицательный
-                if base_limit < 0:
-                    logger.warning(
-                        '⚠️ Базовый лимит отрицательный для подписки ГБ. Используем лимит из тарифа: ГБ',
-                        subscription_id=subscription.id,
-                        base_limit=base_limit,
-                        tariff_base_limit=tariff_base_limit,
-                    )
-                    base_limit = tariff_base_limit
-
-        # Защита от отрицательного базового лимита
-        base_limit = max(0, base_limit)
-
-        # Рассчитываем новый лимит
-        new_purchased = remaining_purchased_gb
-        new_limit = base_limit + new_purchased
-
-        # Двойная защита: новый лимит не может быть меньше базового
-        if new_limit < base_limit:
-            logger.error(
-                '⚠️ КРИТИЧЕСКАЯ ОШИБКА: новый лимит ( ГБ) меньше базового ( ГБ). Устанавливаем базовый лимит.',
-                new_limit=new_limit,
-                base_limit=base_limit,
-            )
-            new_limit = base_limit
-            new_purchased = 0
-
-        # Обновляем подписку
-        subscription.traffic_limit_gb = max(0, new_limit)
-        subscription.purchased_traffic_gb = max(0, new_purchased)
-
-        if not remaining_purchases:
-            # Нет больше активных докупок - сбрасываем дату
-            subscription.traffic_reset_at = None
-        else:
-            # Устанавливаем дату сброса по ближайшей истекающей докупке
-            next_expiry = min(p.expires_at for p in remaining_purchases)
-            subscription.traffic_reset_at = next_expiry
+        old_limit = subscription.traffic_limit_gb or 0
+        old_purchased = subscription.purchased_traffic_gb or 0
+        expired_purchases = await remove_expired_traffic_purchases(db, subscription, now=now)
+        if not expired_purchases:
+            return 0
+        total_expired_gb = sum(p.traffic_gb for p in expired_purchases)
+        new_purchased = subscription.purchased_traffic_gb
+        base_limit = subscription.traffic_limit_gb - new_purchased if subscription.traffic_limit_gb > 0 else 0
 
         subscription.updated_at = datetime.now(UTC)
 
         await db.flush()
 
-        # Keep expiry rows until RemnaWave accepts the lower limit. A failed sync is retried later.
+        # Commit quota and expired rows only after panel synchronization succeeds.
         user = await get_user_by_id(db, subscription.user_id) if subscription.user_id else None
         if user and user.remnawave_uuid:
             from app.services.subscription_service import SubscriptionService
@@ -499,9 +428,6 @@ class DailySubscriptionService:
             if updated_user is None:
                 await db.rollback()
                 raise RuntimeError('RemnaWave rejected traffic top-up expiry update')
-
-        for purchase in expired_purchases:
-            await db.delete(purchase)
 
         await db.commit()
 
@@ -523,6 +449,8 @@ class DailySubscriptionService:
             user = await get_user_by_id(db, subscription.user_id)
             if user:
                 await self._notify_traffic_reset(user, subscription, total_expired_gb)
+
+        return len(expired_purchases)
 
     async def _notify_traffic_reset(self, user: User, subscription: Subscription, reset_gb: int):
         """Уведомляет пользователя о сбросе докупленного трафика."""

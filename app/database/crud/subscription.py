@@ -27,6 +27,8 @@ from app.services.device_traffic_bonus import (
     rebuild_traffic_with_device_bonus,
     sync_device_traffic_bonus,
 )
+from app.services.metered_traffic_policy import cap_metered_usage
+from app.services.traffic_purchase_service import prepare_metered_traffic_topup
 from app.utils.pricing_utils import calculate_months_from_days, get_remaining_months
 from app.utils.timezone import format_local_datetime
 
@@ -669,9 +671,12 @@ async def add_subscription_traffic(
 ) -> Subscription:
     if gb <= 0:
         raise ValueError('Traffic top-up amount must be greater than 0 GB')
+    await db.refresh(subscription, with_for_update={'of': Subscription})
     if subscription.traffic_limit_gb == 0:
         raise ValueError('Cannot add temporary traffic to an unlimited subscription')
 
+    await prepare_metered_traffic_topup(db, subscription)
+    cap_metered_usage(subscription)
     subscription.add_traffic(gb)
     subscription.updated_at = datetime.now(UTC)
 

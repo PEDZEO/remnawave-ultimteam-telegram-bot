@@ -412,7 +412,8 @@ async def renew_subscription(
         user.subscription.end_date = user.subscription.end_date + timedelta(days=request.period_days)
     else:
         user.subscription.end_date = now + timedelta(days=request.period_days)
-        user.subscription.start_date = now
+        if not user.subscription.start_date:
+            user.subscription.start_date = now
 
     user.subscription.status = 'active'
     user.subscription.is_trial = False
@@ -1444,7 +1445,11 @@ async def _build_tariff_response(
         'is_daily': getattr(tariff, 'is_daily', False),
         'daily_price_kopeks': daily_price,
         # Сброс трафика
-        'traffic_reset_mode': tariff.traffic_reset_mode or settings.DEFAULT_TRAFFIC_RESET_STRATEGY,
+        'traffic_reset_mode': (
+            'MONTH'
+            if is_metered_traffic_enabled() and tariff_allows_special_servers(tariff)
+            else tariff.traffic_reset_mode or settings.DEFAULT_TRAFFIC_RESET_STRATEGY
+        ),
     }
 
     # Add promo group info if user has discounts

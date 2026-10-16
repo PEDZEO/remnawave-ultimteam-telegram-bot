@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import math
+from calendar import monthrange
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 
 
 BYTES_PER_GB = 1024**3
+METERED_TRAFFIC_TIMEZONE = 'Europe/Moscow'
 MIN_METERED_NODE_MULTIPLIER = 0.1
 MAX_METERED_NODE_MULTIPLIER = 100.0
 
@@ -189,16 +192,155 @@ def calculate_metered_usage(
     panel_counter_bytes: int,
     baseline_bytes: int,
     last_counter_bytes: int,
+    counter_reset_detected: bool = False,
 ) -> tuple[int, int, bool]:
     current = max(0, int(panel_counter_bytes or 0))
-    baseline = max(0, int(baseline_bytes or 0))
+    baseline = int(baseline_bytes or 0)
     previous = max(0, int(last_counter_bytes or 0))
 
-    counter_was_reset = current < previous or current < baseline
+    counter_was_reset = counter_reset_detected or current < previous or current < baseline
     if counter_was_reset:
-        baseline = 0
+        # Keep usage already accounted in this billing period when the panel
+        # restarts its counter. Only our scheduled/manual reset grants new quota.
+        baseline = -max(0, previous - baseline)
 
     return max(0, current - baseline), baseline, counter_was_reset
+
+
+def get_metered_traffic_period(
+    subscription: Any,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """Return monthly connection anniversaries without drifting after short months."""
+    current = now or datetime.now(UTC)
+    timezone = ZoneInfo(METERED_TRAFFIC_TIMEZONE)
+    anchor = (
+        getattr(subscription, 'start_date', None)
+        or getattr(subscription, 'created_at', None)
+        or getattr(subscription, 'metered_traffic_initialized_at', None)
+        or current
+    )
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    anchor = anchor.astimezone(timezone)
+    local_now = current.astimezone(timezone)
+    months = max(0, (local_now.year - anchor.year) * 12 + local_now.month - anchor.month)
+
+    def anniversary(offset: int) -> datetime:
+        year, month_index = divmod(anchor.year * 12 + anchor.month - 1 + offset, 12)
+        month = month_index + 1
+        return anchor.replace(year=year, month=month, day=min(anchor.day, monthrange(year, month)[1]))
+
+    if months > 0 and anniversary(months) > local_now:
+        months -= 1
+    return anniversary(months).astimezone(UTC), anniversary(months + 1).astimezone(UTC)
+
+
+def metered_cycle_is_due(subscription: Any, *, now: datetime | None = None) -> bool:
+    initialized_at = getattr(subscription, 'metered_traffic_initialized_at', None)
+    if initialized_at is None:
+        return False
+    if initialized_at.tzinfo is None:
+        initialized_at = initialized_at.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    period_start, _ = get_metered_traffic_period(subscription, now=current)
+    return initialized_at < period_start <= current
+
+
+def refresh_metered_usage(
+    subscription: Any,
+    *,
+    panel_counter_bytes: int,
+    now: datetime,
+    panel_reset_at: datetime | None = None,
+    sampled_at: datetime | None = None,
+) -> tuple[int, bool, bool]:
+    """Advance the monthly cycle and account a panel sample; never create usage debt."""
+    counter = max(0, int(panel_counter_bytes or 0))
+    initialized = getattr(subscription, 'metered_traffic_initialized_at', None) is None
+    renewed = not initialized and metered_cycle_is_due(subscription, now=now)
+    if initialized or renewed:
+        baseline = counter
+        used_bytes = 0
+        subscription.metered_traffic_initialized_at = now
+        subscription.metered_warning_percent = 0
+    elif getattr(subscription, 'metered_access_blocked', False):
+        # Connections may keep reporting bytes after the squad has been removed.
+        # Those bytes must not consume the next purchased package.
+        used_bytes = round(max(0.0, float(subscription.traffic_used_gb or 0.0)) * BYTES_PER_GB)
+        limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
+        if limit_bytes > 0:
+            used_bytes = min(used_bytes, limit_bytes)
+        baseline = counter - used_bytes
+    else:
+        last_checked = getattr(subscription, 'metered_traffic_last_checked_at', None)
+        reset_detected = bool(panel_reset_at and last_checked and last_checked < panel_reset_at <= now)
+        used_bytes, baseline, _ = calculate_metered_usage(
+            panel_counter_bytes=counter,
+            baseline_bytes=subscription.metered_traffic_baseline_bytes,
+            last_counter_bytes=subscription.metered_traffic_last_counter_bytes,
+            counter_reset_detected=reset_detected,
+        )
+        limit_bytes = max(0, int(subscription.traffic_limit_gb or 0)) * BYTES_PER_GB
+        if limit_bytes > 0 and used_bytes > limit_bytes:
+            used_bytes = limit_bytes
+            baseline = counter - used_bytes
+
+    subscription.metered_traffic_baseline_bytes = baseline
+    subscription.metered_traffic_last_counter_bytes = counter
+    observed_at = sampled_at or now
+    if panel_reset_at is not None and panel_reset_at <= now:
+        observed_at = max(observed_at, panel_reset_at)
+    subscription.metered_traffic_last_checked_at = observed_at
+    subscription.traffic_used_gb = used_bytes / BYTES_PER_GB
+    return used_bytes, initialized, renewed
+
+
+def rebase_metered_counter(
+    subscription: Any,
+    *,
+    panel_counter_bytes: int,
+    sampled_at: datetime | None = None,
+    panel_reset_at: datetime | None = None,
+) -> None:
+    """Start counting newly restored access from the accepted panel response."""
+    counter = max(0, int(panel_counter_bytes or 0))
+    used_bytes = round(max(0.0, float(subscription.traffic_used_gb or 0.0)) * BYTES_PER_GB)
+    subscription.metered_traffic_baseline_bytes = counter - used_bytes
+    subscription.metered_traffic_last_counter_bytes = counter
+    observed_at = sampled_at or datetime.now(UTC)
+    if panel_reset_at is not None:
+        observed_at = max(observed_at, panel_reset_at)
+    subscription.metered_traffic_last_checked_at = observed_at
+    subscription.updated_at = datetime.now(UTC)
+
+
+def cap_metered_usage(subscription: Any) -> bool:
+    """Discard overshoot before adding quota or after a temporary quota expires."""
+    if not is_metered_traffic_enabled():
+        return False
+    limit_gb = max(0, int(getattr(subscription, 'traffic_limit_gb', 0) or 0))
+    used_gb = max(0.0, float(getattr(subscription, 'traffic_used_gb', 0.0) or 0.0))
+    if limit_gb <= 0 or used_gb <= limit_gb:
+        return False
+    baseline = int(getattr(subscription, 'metered_traffic_baseline_bytes', 0) or 0)
+    subscription.metered_traffic_baseline_bytes = baseline + round((used_gb - limit_gb) * BYTES_PER_GB)
+    subscription.updated_at = datetime.now(UTC)
+    subscription.traffic_used_gb = float(limit_gb)
+    return True
+
+
+def metered_sample_is_stale(subscription: Any, sampled_at: datetime | None) -> bool:
+    if sampled_at is None:
+        return False
+    return any(
+        timestamp is not None and timestamp > sampled_at
+        for timestamp in (
+            getattr(subscription, 'metered_traffic_last_checked_at', None),
+            getattr(subscription, 'updated_at', None),
+        )
+    )
 
 
 def _add_squad(subscription: Any, squad_uuid: str) -> None:

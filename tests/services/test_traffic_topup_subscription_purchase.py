@@ -89,7 +89,11 @@ async def test_create_paid_subscription_applies_device_bonus() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extending_subscription_does_not_make_topup_permanent(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('is_expired', [False, True])
+async def test_extending_subscription_does_not_make_topup_permanent(
+    monkeypatch: pytest.MonkeyPatch,
+    is_expired: bool,
+) -> None:
     async def clear_notifications_stub(*_args, **_kwargs) -> None:
         return None
 
@@ -101,7 +105,7 @@ async def test_extending_subscription_does_not_make_topup_permanent(monkeypatch:
         user_id=30,
         status=SubscriptionStatus.ACTIVE.value,
         start_date=now - timedelta(days=10),
-        end_date=now + timedelta(days=20),
+        end_date=now + timedelta(days=-1 if is_expired else 20),
         tariff_id=10,
         is_trial=False,
         traffic_limit_gb=120,
@@ -124,6 +128,7 @@ async def test_extending_subscription_does_not_make_topup_permanent(monkeypatch:
 
     assert subscription.traffic_limit_gb == 120
     assert subscription.purchased_traffic_gb == 20
+    assert subscription.start_date == now - timedelta(days=10)
     assert subscription.traffic_reset_at is not None
     db.commit.assert_awaited()
     db.refresh.assert_awaited()
@@ -213,4 +218,4 @@ async def test_add_subscription_traffic_commit_false_flushes_without_commit() ->
     db.execute.assert_awaited_once()
     db.flush.assert_awaited_once()
     db.commit.assert_not_awaited()
-    db.refresh.assert_not_awaited()
+    db.refresh.assert_awaited_once_with(subscription, with_for_update={'of': Subscription})

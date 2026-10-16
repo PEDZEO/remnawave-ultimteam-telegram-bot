@@ -62,6 +62,11 @@ class SubscriptionData(BaseModel):
     metered_access_blocked: bool = False
     metered_server_label: str | None = None
     metered_traffic_remaining_gb: float | None = None
+    metered_traffic_period_started_at: datetime | None = None
+    metered_traffic_reset_at: datetime | None = None
+    metered_traffic_reset_timezone: str | None = None
+    metered_traffic_base_limit_gb: int | None = None
+    purchased_traffic_gb: int = 0
     standard_traffic_unlimited: bool = False
 
     model_config = ConfigDict(from_attributes=True)

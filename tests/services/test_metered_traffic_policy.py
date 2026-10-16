@@ -90,7 +90,7 @@ def test_usage_is_measured_from_baseline_and_survives_counter_reset() -> None:
         baseline_bytes=100,
         last_counter_bytes=150,
     )
-    assert (used, baseline, reset) == (5, 0, True)
+    assert (used, baseline, reset) == (55, -50, True)
 
 
 def test_exhaustion_removes_only_metered_squad_and_is_idempotent() -> None:

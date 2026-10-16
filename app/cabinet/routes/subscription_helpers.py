@@ -5,7 +5,12 @@ from typing import Any
 
 from app.config import settings
 from app.database.models import Subscription, User
-from app.services.metered_traffic_policy import get_customer_squad_uuids, subscription_allows_special_servers
+from app.services.metered_traffic_policy import (
+    METERED_TRAFFIC_TIMEZONE,
+    get_customer_squad_uuids,
+    get_metered_traffic_period,
+    subscription_allows_special_servers,
+)
 
 from ..schemas.subscription import ServerInfo, SubscriptionData, SubscriptionResponse
 
@@ -148,6 +153,12 @@ def subscription_to_response(
     hide_link = settings.should_hide_subscription_link()
     metered_enabled = subscription_allows_special_servers(subscription)
     metered_remaining_gb = None
+    metered_period_start = None
+    metered_reset_at = None
+    purchased_traffic_gb = max(0, int(getattr(subscription, 'purchased_traffic_gb', 0) or 0))
+    if metered_enabled:
+        traffic_reset_mode = 'MONTH'
+        metered_period_start, metered_reset_at = get_metered_traffic_period(subscription, now=now)
     if metered_enabled and traffic_limit_gb > 0:
         metered_remaining_gb = round(max(0.0, traffic_limit_gb - traffic_used_gb), 2)
 
@@ -189,5 +200,10 @@ def subscription_to_response(
         metered_access_blocked=bool(getattr(subscription, 'metered_access_blocked', False)),
         metered_server_label=(settings.ULTIMA_METERED_SERVER_LABEL if metered_enabled else None),
         metered_traffic_remaining_gb=metered_remaining_gb,
+        metered_traffic_period_started_at=metered_period_start,
+        metered_traffic_reset_at=metered_reset_at,
+        metered_traffic_reset_timezone=METERED_TRAFFIC_TIMEZONE if metered_enabled else None,
+        metered_traffic_base_limit_gb=max(0, traffic_limit_gb - purchased_traffic_gb) if metered_enabled else None,
+        purchased_traffic_gb=purchased_traffic_gb,
         standard_traffic_unlimited=metered_enabled,
     )
