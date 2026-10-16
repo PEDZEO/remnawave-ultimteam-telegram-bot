@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.27.1](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/compare/v3.27.0...v3.27.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **admin:** delete migrated user accounts ([3da7545](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/3da754572bd5533a5d40bea49324364bbebdd9f1))
+* **referral:** expose Telegram invite link ([c3751d4](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/c3751d425681608c200e29bb00c32f0437fa121d))
+* **traffic:** renew monthly squad quotas without accumulated debt ([6f9cb51](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/6f9cb51cd4ada7a2d46f7776aebf3bf2e298a14c))
+
 ## [3.27.0](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/compare/v3.26.2...v3.27.0) (2026-08-30)
 
 
