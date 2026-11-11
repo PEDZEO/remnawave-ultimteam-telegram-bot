@@ -34,6 +34,10 @@ class AdminNotificationService:
         self.chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
         self.topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None)
         self.ticket_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TICKET_TOPIC_ID', None)
+        self.trial_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TRIAL_TOPIC_ID', None)
+        self.payment_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_PAYMENT_TOPIC_ID', None)
+        self.node_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_NODE_TOPIC_ID', None)
+        self.error_topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_ERROR_TOPIC_ID', None)
         self.enabled = getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False)
 
     @staticmethod
@@ -379,7 +383,7 @@ class AdminNotificationService:
             message_lines.append('')
             message_lines.append(f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>')
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), topic_id=self.trial_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о триале', error=e)
@@ -507,7 +511,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), topic_id=self.payment_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о покупке', error=e)
@@ -829,7 +833,7 @@ class AdminNotificationService:
                 return False
 
         try:
-            return await self._send_message(message)
+            return await self._send_message(message, topic_id=self.payment_topic_id)
         except Exception as e:
             logger.error('Ошибка отправки уведомления о пополнении', error=e, exc_info=True)
             return False
@@ -906,7 +910,7 @@ class AdminNotificationService:
 
 ⏰ <i>{format_local_datetime(datetime.now(UTC), '%d.%m.%Y %H:%M:%S')}</i>"""
 
-            return await self._send_message(message)
+            return await self._send_message(message, topic_id=self.payment_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о продлении', error=e)
@@ -1097,7 +1101,7 @@ class AdminNotificationService:
                     f'⏰ <i>{format_local_datetime(datetime.now(UTC), "%d.%m.%Y %H:%M:%S")}</i>',
                 ]
             )
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), topic_id=self.payment_topic_id)
         except Exception as error:
             logger.error('Ошибка отправки уведомления о покупке подарка', error=error, exc_info=True)
             return False
@@ -1346,8 +1350,20 @@ class AdminNotificationService:
             logger.error('Ошибка отправки уведомления о смене промогруппы', error=e)
             return False
 
+    def _resolve_topic_id(self, *, ticket_event: bool = False, topic_id: int | None = None) -> int | None:
+        if topic_id is not None:
+            return topic_id
+        if ticket_event and self.ticket_topic_id:
+            return self.ticket_topic_id
+        return self.topic_id
+
     async def _send_message(
-        self, text: str, reply_markup: types.InlineKeyboardMarkup | None = None, *, ticket_event: bool = False
+        self,
+        text: str,
+        reply_markup: types.InlineKeyboardMarkup | None = None,
+        *,
+        ticket_event: bool = False,
+        topic_id: int | None = None,
     ) -> bool:
         if not self.chat_id:
             logger.warning('ADMIN_NOTIFICATIONS_CHAT_ID не настроен')
@@ -1361,12 +1377,7 @@ class AdminNotificationService:
                 'disable_web_page_preview': True,
             }
 
-            # route to ticket-specific topic if provided
-            thread_id = None
-            if ticket_event and self.ticket_topic_id:
-                thread_id = self.ticket_topic_id
-            elif self.topic_id:
-                thread_id = self.topic_id
+            thread_id = self._resolve_topic_id(ticket_event=ticket_event, topic_id=topic_id)
             if thread_id:
                 message_kwargs['message_thread_id'] = thread_id
             if reply_markup is not None:
@@ -1395,11 +1406,7 @@ class AdminNotificationService:
                     }
                     if reply_markup is not None:
                         retry_kwargs['reply_markup'] = reply_markup
-                    thread_id = None
-                    if ticket_event and self.ticket_topic_id:
-                        thread_id = self.ticket_topic_id
-                    elif self.topic_id:
-                        thread_id = self.topic_id
+                    thread_id = self._resolve_topic_id(ticket_event=ticket_event, topic_id=topic_id)
                     if thread_id:
                         retry_kwargs['message_thread_id'] = thread_id
 
@@ -1427,7 +1434,7 @@ class AdminNotificationService:
             return False
         return await self._send_message(text, reply_markup=reply_markup)
 
-    async def send_webhook_notification(self, text: str) -> bool:
+    async def send_webhook_notification(self, text: str, *, topic_id: int | None = None) -> bool:
         """Send a generic webhook/infrastructure notification to admin chat.
 
         Used by RemnaWaveWebhookService for node, service, and CRM events.
@@ -1435,7 +1442,7 @@ class AdminNotificationService:
         """
         if not self._is_enabled():
             return False
-        return await self._send_message(text)
+        return await self._send_message(text, topic_id=topic_id)
 
     def _get_payment_method_display(self, payment_method: str | None) -> str:
         if not payment_method:
@@ -1621,7 +1628,7 @@ class AdminNotificationService:
 
             message = '\n'.join(message_parts)
 
-            return await self._send_message(message)
+            return await self._send_message(message, topic_id=self.node_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о техработах', error=e)
@@ -1706,7 +1713,7 @@ class AdminNotificationService:
 
             message = '\n'.join(message_parts)
 
-            return await self._send_message(message)
+            return await self._send_message(message, topic_id=self.node_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления о статусе панели Remnawave', error=e)
@@ -1799,7 +1806,7 @@ class AdminNotificationService:
                 ]
             )
 
-            return await self._send_message('\n'.join(message_lines))
+            return await self._send_message('\n'.join(message_lines), topic_id=self.payment_topic_id)
 
         except Exception as e:
             logger.error('Ошибка отправки уведомления об изменении подписки', error=e)
@@ -2092,7 +2099,7 @@ class AdminNotificationService:
             return False
 
         # Используем специальный топик для подозрительной активности, если он задан
-        notification_topic_id = topic_id or self.topic_id
+        notification_topic_id = topic_id or self.node_topic_id or self.topic_id
 
         try:
             message_kwargs = {

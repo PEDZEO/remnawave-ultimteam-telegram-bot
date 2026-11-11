@@ -16,7 +16,7 @@ from app.config import settings
 from app.database.crud.subscription import extend_subscription
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.crud.user import get_user_by_id, subtract_user_balance
-from app.database.models import Subscription, TransactionType, User
+from app.database.models import Subscription, SubscriptionStatus, TransactionType, User
 from app.localization.texts import get_texts
 from app.services.admin_notification_service import AdminNotificationService
 from app.services.device_traffic_bonus import (
@@ -2347,15 +2347,13 @@ async def auto_purchase_saved_cart_after_topup(
     # Суточные тарифы тоже блокируем: try_resume_disabled_daily_after_topup уже отработал
     # выше по цепочке (common.py), и если он не возобновил — причина сохраняется.
     from app.database.crud.subscription import get_subscription_by_user_id as _get_sub
-    from app.database.models import SubscriptionStatus
 
-    _existing_sub = getattr(user, 'subscription', None)
     try:
-        db_subscription = await _get_sub(db, user.id)
-        if db_subscription is not None:
-            _existing_sub = db_subscription
+        # Payment refreshes can expire user.subscription; load it explicitly.
+        _existing_sub = await _get_sub(db, user.id)
     except AttributeError:
         # Unit-tests may pass lightweight db stubs without execute().
+        _existing_sub = getattr(user, 'subscription', None)
         logger.debug(
             '🔁 Автопокупка: пропускаем DB-проверку статуса подписки (stub db session)',
             format_user_id=_format_user_id(user),

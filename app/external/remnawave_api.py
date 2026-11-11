@@ -505,8 +505,10 @@ class RemnaWaveAPI:
 
                     return response_data
 
-            except aiohttp.ClientError as e:
-                if attempt < max_retries:
+            except (aiohttp.ClientError, TimeoutError) as e:
+                # A response timeout can leave a mutation applied in the panel.
+                retry_safe = method.upper() in {'GET', 'HEAD', 'OPTIONS'} or not isinstance(e, TimeoutError)
+                if attempt < max_retries and retry_safe:
                     delay = base_delay * (2**attempt)
                     logger.warning(
                         'Request failed on retry / after s',
@@ -519,8 +521,8 @@ class RemnaWaveAPI:
                     )
                     await asyncio.sleep(delay)
                     continue
-                logger.error('Request failed', error=e)
-                raise RemnaWaveAPIError(f'Request failed: {e!s}')
+                logger.error('Request failed', error=e, method=method, endpoint=endpoint)
+                raise RemnaWaveAPIError(f'Request failed: {str(e) or type(e).__name__}') from e
 
         raise RemnaWaveAPIError(f'Max retries exceeded for {method} {endpoint}')
 

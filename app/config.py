@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     ADMIN_NOTIFICATIONS_CHAT_ID: str | None = None
     ADMIN_NOTIFICATIONS_TOPIC_ID: int | None = None
     ADMIN_NOTIFICATIONS_TICKET_TOPIC_ID: int | None = None
+    ADMIN_NOTIFICATIONS_TRIAL_TOPIC_ID: int | None = None
+    ADMIN_NOTIFICATIONS_PAYMENT_TOPIC_ID: int | None = None
+    ADMIN_NOTIFICATIONS_NODE_TOPIC_ID: int | None = None
+    ADMIN_NOTIFICATIONS_ERROR_TOPIC_ID: int | None = None
     ADMIN_NOTIFICATIONS_NALOG_TOPIC_ID: int | None = None
 
     # Настройки очереди чеков NaloGO

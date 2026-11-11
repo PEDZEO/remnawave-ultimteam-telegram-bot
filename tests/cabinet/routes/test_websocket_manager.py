@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -90,3 +90,43 @@ async def test_broker_event_is_delivered_only_locally():
 
     manager._send_to_user_local.assert_awaited_once_with(42, {'type': 'notification.test'})
     manager._publish.assert_not_awaited()
+
+
+async def test_broker_listener_reconnects_after_redis_restart(monkeypatch):
+    manager = CabinetConnectionManager()
+
+    failed_pubsub = MagicMock()
+    failed_pubsub.aclose = AsyncMock()
+
+    async def failed_listen():
+        raise ConnectionError('Redis restarted')
+        yield  # pragma: no cover
+
+    failed_pubsub.listen = failed_listen
+
+    reconnected = asyncio.Event()
+    replacement_pubsub = MagicMock()
+    replacement_pubsub.subscribe = AsyncMock(side_effect=lambda *_: reconnected.set())
+    replacement_pubsub.aclose = AsyncMock()
+
+    async def replacement_listen():
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    replacement_pubsub.listen = replacement_listen
+    redis_client = MagicMock()
+    redis_client.pubsub.return_value = replacement_pubsub
+
+    manager._pubsub = failed_pubsub
+    monkeypatch.setattr(websocket_module.cache, 'redis_client', redis_client)
+    monkeypatch.setattr(websocket_module, '_WS_BROKER_RETRY_MIN_SECONDS', 0.001)
+    monkeypatch.setattr(websocket_module, '_WS_BROKER_RETRY_MAX_SECONDS', 0.001)
+
+    task = asyncio.create_task(manager._listen_for_broker_events())
+    await asyncio.wait_for(reconnected.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    failed_pubsub.aclose.assert_awaited_once()
+    replacement_pubsub.subscribe.assert_awaited_once_with('cabinet:websocket:events')

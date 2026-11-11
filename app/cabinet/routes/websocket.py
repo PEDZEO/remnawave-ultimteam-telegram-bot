@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from app.cabinet.auth.jwt_handler import get_token_payload
 from app.config import settings
@@ -24,6 +25,8 @@ router = APIRouter()
 _AUTH_SUBPROTOCOL = 'cabinet-auth'
 _WS_BROKER_CHANNEL = 'cabinet:websocket:events'
 _WS_SEND_TIMEOUT_SECONDS = 3.0
+_WS_BROKER_RETRY_MIN_SECONDS = 1.0
+_WS_BROKER_RETRY_MAX_SECONDS = 30.0
 
 
 def _get_websocket_credentials(websocket: WebSocket) -> tuple[str | None, str | None]:
@@ -34,6 +37,22 @@ def _get_websocket_credentials(websocket: WebSocket) -> tuple[str | None, str | 
     if len(requested_protocols) >= 2 and requested_protocols[0] == _AUTH_SUBPROTOCOL:
         return requested_protocols[1], _AUTH_SUBPROTOCOL
     return None, None
+
+
+async def _accept_websocket(websocket: WebSocket, subprotocol: str | None = None) -> bool:
+    if (
+        websocket.application_state is WebSocketState.DISCONNECTED
+        or websocket.client_state is WebSocketState.DISCONNECTED
+    ):
+        return False
+    if websocket.application_state is WebSocketState.CONNECTED:
+        return True
+    try:
+        await websocket.accept(subprotocol=subprotocol)
+    except (WebSocketDisconnect, OSError):
+        logger.debug('Cabinet WS disconnected during handshake')
+        return False
+    return True
 
 
 class CabinetConnectionManager:
@@ -76,19 +95,59 @@ class CabinetConnectionManager:
             self._pubsub = None
 
     async def _listen_for_broker_events(self) -> None:
-        try:
-            async for event in self._pubsub.listen():
-                if event.get('type') != 'message':
-                    continue
-                raw_data = event.get('data')
-                if isinstance(raw_data, bytes):
-                    raw_data = raw_data.decode('utf-8')
-                await self._handle_broker_message(json.loads(raw_data))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception('Cabinet WS broker listener failed')
-            self._subscriber_task = None
+        retry_delay = _WS_BROKER_RETRY_MIN_SECONDS
+        while True:
+            try:
+                async for event in self._pubsub.listen():
+                    retry_delay = _WS_BROKER_RETRY_MIN_SECONDS
+                    if event.get('type') != 'message':
+                        continue
+                    raw_data = event.get('data')
+                    if isinstance(raw_data, bytes):
+                        raw_data = raw_data.decode('utf-8')
+                    await self._handle_broker_message(json.loads(raw_data))
+                raise ConnectionError('Redis pubsub listener stopped unexpectedly')
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(
+                    'Cabinet WS broker disconnected; reconnecting',
+                    error=error,
+                    retry_delay_seconds=retry_delay,
+                )
+
+            if self._pubsub is not None:
+                with suppress(Exception):
+                    await self._pubsub.aclose()
+                self._pubsub = None
+
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, _WS_BROKER_RETRY_MAX_SECONDS)
+
+            while self._pubsub is None:
+                pubsub = None
+                try:
+                    if cache.redis_client is None:
+                        raise ConnectionError('Redis client is unavailable')
+                    pubsub = cache.redis_client.pubsub()
+                    await pubsub.subscribe(_WS_BROKER_CHANNEL)
+                    self._pubsub = pubsub
+                    retry_delay = _WS_BROKER_RETRY_MIN_SECONDS
+                    logger.info('Cabinet WS broker subscription restored')
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    logger.warning(
+                        'Cabinet WS broker resubscribe failed',
+                        error=error,
+                        retry_delay_seconds=retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, _WS_BROKER_RETRY_MAX_SECONDS)
+                finally:
+                    if pubsub is not None and self._pubsub is not pubsub:
+                        with suppress(Exception):
+                            await pubsub.aclose()
 
     async def _handle_broker_message(self, event: dict) -> None:
         if event.get('origin') == self._instance_id:
@@ -323,7 +382,8 @@ async def cabinet_websocket_endpoint(websocket: WebSocket):
     if not token:
         logger.debug('Cabinet WS: No token from', client_host=client_host)
         # Принимаем и сразу закрываем с кодом ошибки
-        await websocket.accept(subprotocol=accepted_subprotocol)
+        if not await _accept_websocket(websocket, accepted_subprotocol):
+            return
         await websocket.close(code=1008, reason='Unauthorized: No token')
         return
 
@@ -333,13 +393,15 @@ async def cabinet_websocket_endpoint(websocket: WebSocket):
     if not user_id:
         logger.debug('Cabinet WS: Invalid token from', client_host=client_host)
         # Принимаем и сразу закрываем с кодом ошибки
-        await websocket.accept(subprotocol=accepted_subprotocol)
+        if not await _accept_websocket(websocket, accepted_subprotocol):
+            return
         await websocket.close(code=1008, reason='Unauthorized: Invalid token')
         return
 
     # Принимаем соединение
     try:
-        await websocket.accept(subprotocol=accepted_subprotocol)
+        if not await _accept_websocket(websocket, accepted_subprotocol):
+            return
         logger.debug('Cabinet WS accepted: user_id is_admin', user_id=user_id, is_admin=is_admin)
     except Exception as e:
         logger.error('Cabinet WS: Failed to accept from', client_host=client_host, e=e)
@@ -389,13 +451,15 @@ async def guest_support_websocket_endpoint(websocket: WebSocket):
     """Real-time updates for one anonymous support conversation."""
     protocols = [value.strip() for value in websocket.headers.get('sec-websocket-protocol', '').split(',')]
     if len(protocols) != 3 or protocols[0] != 'guest-support':
-        await websocket.accept()
+        if not await _accept_websocket(websocket):
+            return
         await websocket.close(code=1008, reason='Invalid guest credentials')
         return
     try:
         ticket_id = int(protocols[1])
     except (TypeError, ValueError):
-        await websocket.accept(subprotocol='guest-support')
+        if not await _accept_websocket(websocket, 'guest-support'):
+            return
         await websocket.close(code=1008, reason='Invalid ticket')
         return
 
@@ -405,11 +469,13 @@ async def guest_support_websocket_endpoint(websocket: WebSocket):
         async with AsyncSessionLocal() as db:
             await _get_guest_ticket(db, ticket_id, protocols[2])
     except Exception:
-        await websocket.accept(subprotocol='guest-support')
+        if not await _accept_websocket(websocket, 'guest-support'):
+            return
         await websocket.close(code=1008, reason='Invalid guest credentials')
         return
 
-    await websocket.accept(subprotocol='guest-support')
+    if not await _accept_websocket(websocket, 'guest-support'):
+        return
     await cabinet_ws_manager.connect_guest(websocket, ticket_id)
     await websocket.send_json({'type': 'connected', 'ticket_id': ticket_id})
     try:

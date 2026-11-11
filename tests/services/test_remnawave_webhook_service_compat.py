@@ -9,6 +9,17 @@ from app.services.remnawave_webhook_service import RemnaWaveWebhookService
 from app.utils.miniapp_buttons import CALLBACK_TO_CABINET_PATH
 
 
+def test_admin_webhook_events_use_dedicated_topics() -> None:
+    service = RemnaWaveWebhookService(bot=SimpleNamespace())
+    service._admin_service.node_topic_id = 1649
+    service._admin_service.error_topic_id = 35257
+
+    assert service._get_admin_event_topic_id('node.connection_lost') == 1649
+    assert service._get_admin_event_topic_id('service.panel_started') == 1649
+    assert service._get_admin_event_topic_id('crm.infra_billing_node_payment_due_today') == 1649
+    assert service._get_admin_event_topic_id('errors.bandwidth_usage_threshold_reached_max_notifications') == 35257
+
+
 @pytest.mark.asyncio
 async def test_resolve_user_by_panel_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
     bot_user = SimpleNamespace(id=7, remnawave_uuid='rw-user-uuid')

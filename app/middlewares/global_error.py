@@ -220,7 +220,9 @@ async def send_error_to_admin_chat(
     global _last_error_notification
 
     chat_id = getattr(settings, 'ADMIN_NOTIFICATIONS_CHAT_ID', None)
-    topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None)
+    topic_id = getattr(settings, 'ADMIN_NOTIFICATIONS_ERROR_TOPIC_ID', None) or getattr(
+        settings, 'ADMIN_NOTIFICATIONS_TOPIC_ID', None
+    )
     enabled = getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False)
 
     if not enabled or not chat_id:

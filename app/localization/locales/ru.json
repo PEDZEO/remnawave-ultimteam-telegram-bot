@@ -930,6 +930,8 @@
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Подписка автоматически продлена на {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ Новая дата окончания: {date}.",
   "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Перейдите в раздел «Моя подписка», чтобы получить ссылку и инструкции.",
+  "AUTO_PURCHASE_TRAFFIC_SUCCESS": "✅ <b>Трафик добавлен автоматически!</b>\n\nДобавлено: {traffic_gb} ГБ\nНовый лимит: {new_limit} ГБ\nСписано: {price}",
+  "AUTO_PURCHASE_DEVICES_SUCCESS": "✅ <b>Устройства добавлены автоматически!</b>\n\nДобавлено устройств: {devices_to_add}\nНовый лимит устройств: {new_limit}\nСписано: {price}",
   "BALANCE_TOP_UP": "💳 Пополнить",
   "BLOCK_BY_TIME": "⏳ Блокировка по времени",
   "BLOCK_FOREVER": "🚫 Заблокировать",

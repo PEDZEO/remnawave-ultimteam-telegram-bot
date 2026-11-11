@@ -162,6 +162,13 @@ class RemnaWaveWebhookService:
         """Check if the event is admin-scoped (no DB session needed)."""
         return event_name in self._admin_handlers
 
+    def _get_admin_event_topic_id(self, event_name: str) -> int | None:
+        if event_name in _ADMIN_ERROR_EVENTS:
+            return self._admin_service.error_topic_id
+        if event_name in _ADMIN_NODE_EVENTS or event_name in _ADMIN_SERVICE_EVENTS or event_name in _ADMIN_CRM_EVENTS:
+            return self._admin_service.node_topic_id
+        return None
+
     async def process_event(self, db: AsyncSession | None, event_name: str, data: dict) -> bool:
         """Route event to the appropriate handler.
 
@@ -277,7 +284,10 @@ class RemnaWaveWebhookService:
                 lines.append(f'UUID: <code>{html.escape(str(sub_uuid))}</code>')
 
         try:
-            await self._admin_service.send_webhook_notification('\n'.join(lines))
+            await self._admin_service.send_webhook_notification(
+                '\n'.join(lines),
+                topic_id=self._get_admin_event_topic_id(event_name),
+            )
             return True
         except Exception:
             logger.exception('Failed to send admin notification for event', event_name=event_name)

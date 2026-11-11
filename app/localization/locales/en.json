@@ -910,6 +910,8 @@
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED": "✅ Subscription automatically extended for {period}.",
   "AUTO_PURCHASE_SUBSCRIPTION_EXTENDED_DETAILS": "⏰ New expiration date: {date}.",
   "AUTO_PURCHASE_SUBSCRIPTION_HINT": "Open the ‘My subscription’ section to access your link and setup instructions.",
+  "AUTO_PURCHASE_TRAFFIC_SUCCESS": "✅ <b>Traffic added automatically!</b>\n\nAdded: {traffic_gb} GB\nNew limit: {new_limit} GB\nCharged: {price}",
+  "AUTO_PURCHASE_DEVICES_SUCCESS": "✅ <b>Device slots added automatically!</b>\n\nAdded slots: {devices_to_add}\nNew device limit: {new_limit}\nCharged: {price}",
   "BALANCE_TOP_UP": "💳 Top up",
   "BLOCK_BY_TIME": "⏳ Temporary block",
   "BLOCK_FOREVER": "🚫 Block permanently",
