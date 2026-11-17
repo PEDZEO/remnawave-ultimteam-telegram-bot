@@ -117,7 +117,7 @@ async def _send_main_entrypoint_message(
         if ultima_config.enabled and is_ultima_start_button_usable(ultima_config):
             await send_answer(
                 ultima_config.message_text,
-                reply_markup=build_ultima_start_keyboard(ultima_config),
+                reply_markup=build_ultima_start_keyboard(ultima_config, user.language),
                 parse_mode='HTML',
                 disable_web_page_preview=True,
             )

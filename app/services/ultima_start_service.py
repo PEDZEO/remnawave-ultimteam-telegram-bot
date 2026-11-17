@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import SystemSetting
+from app.keyboards.inline import get_subscription_widget_button
+from app.localization.loader import DEFAULT_LANGUAGE
 from app.utils.miniapp_buttons import build_cabinet_url
 from app.utils.miniapp_url import add_miniapp_cache_buster
 
@@ -136,7 +138,9 @@ async def set_ultima_start_config(
     return config
 
 
-def build_ultima_start_keyboard(config: UltimaStartConfig) -> types.InlineKeyboardMarkup:
+def build_ultima_start_keyboard(
+    config: UltimaStartConfig, language: str = DEFAULT_LANGUAGE
+) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -144,7 +148,8 @@ def build_ultima_start_keyboard(config: UltimaStartConfig) -> types.InlineKeyboa
                     text=config.button_text,
                     web_app=types.WebAppInfo(url=config.button_url),
                 )
-            ]
+            ],
+            [get_subscription_widget_button(language)],
         ]
     )
 

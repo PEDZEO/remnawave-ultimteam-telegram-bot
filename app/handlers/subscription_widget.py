@@ -1,23 +1,35 @@
 import asyncio
 import json
+import re
 from datetime import UTC, datetime
 from functools import cache as cached
+from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import structlog
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNotFound
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WidgetQuery, WidgetQueryTypeData
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
+    User as TelegramUser,
+    WidgetQuery,
+    WidgetQueryTypeData,
+)
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
 from app.database.crud.user import get_user_by_telegram_id
 from app.database.database import AsyncSessionLocal
 from app.database.models import Subscription, User, UserStatus
+from app.keyboards.inline import SUBSCRIPTION_WIDGET_CALLBACK
 from app.services.blacklist_service import blacklist_service
 from app.services.metered_traffic_policy import (
     METERED_TRAFFIC_TIMEZONE,
@@ -30,6 +42,7 @@ from app.utils.cache import cache
 logger = structlog.get_logger(__name__)
 
 _REFRESH_REQUEST = 'refresh:v1'
+_REFRESH_CARD_CALLBACK = 'subscription_widget:refresh'
 _WIDGET_LIFETIME = 90 * 24 * 60 * 60
 _REFRESH_INTERVAL = 18
 _LOCAL_TIME = ZoneInfo(METERED_TRAFFIC_TIMEZONE)
@@ -124,20 +137,27 @@ def _chat_data(subscription: Subscription | None, *, now: datetime) -> dict[str,
     return state
 
 
-def _caption(state: dict[str, str | float | bool]) -> str:
-    lines = [f'{state["plan"]} · {state["status"]}']
+def _card_text(state: dict[str, str | float | bool]) -> str:
+    lines = [f'<b>{escape(str(state["plan"]))}</b> · {escape(str(state["status"]))}']
     if state.get('expires'):
-        lines.append(f'Срок подписки: {state["expires"]}')
+        lines.append(f'Действует до {state["expires"]}')
     if traffic := state.get('traffic'):
         quota = state['quota']
         remaining = state['remaining']
-        amount = f'{remaining:g} из {quota:g} ГБ' if quota else 'безлимитно'
-        lines.append(f'{traffic}: {amount}')
+        amount = f'{remaining:g} из {quota:g} ГБ'.replace('.', ',') if quota else 'безлимитно'
+        lines.extend(('', f'{escape(str(traffic))} · <b>{amount}</b>'))
     if state.get('reset'):
-        lines.append(f'Обновление пакета: {state["reset"]}')
+        lines.append(f'Пакет обновится {state["reset"]}')
     if state.get('special'):
-        lines.append('Обычные серверы: безлимитный трафик')
+        lines.append('Обычные серверы · безлимитно')
     return '\n'.join(lines)
+
+
+def _card_keyboard(public: dict[str, str]) -> InlineKeyboardMarkup:
+    row = [InlineKeyboardButton(text='Обновить', callback_data=_REFRESH_CARD_CALLBACK)]
+    if cabinet := public.get('cabinet'):
+        row.append(InlineKeyboardButton(text='Кабинет', url=cabinet))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
 def _json(payload: dict) -> str:
@@ -148,43 +168,94 @@ def _widget_key(bot_id: int, chat_id: int, message_id: int) -> str:
     return f'subscription_widget:v1:{bot_id}:{chat_id}:{message_id}'
 
 
-async def send_subscription_widget(message: Message, bot: Bot, db_user: User | None = None) -> None:
-    sender = message.from_user
-    if (
-        message.chat.type != ChatType.PRIVATE
-        or not sender
-        or sender.is_bot
-        or sender.id != message.chat.id
-        or not db_user
-        or db_user.telegram_id != sender.id
-        or db_user.status != UserStatus.ACTIVE.value
-    ):
-        return
+def _can_view(message: Message, sender: TelegramUser | None, account: User) -> bool:
+    return (
+        message.chat.type == ChatType.PRIVATE
+        and sender is not None
+        and not sender.is_bot
+        and sender.id == message.chat.id == account.telegram_id
+        and account.status == UserStatus.ACTIVE.value
+    )
 
+
+async def _send_widget(message: Message, bot: Bot, db_user: User) -> None:
     state = _chat_data(db_user.subscription, now=datetime.now(UTC))
     public = _public_data()
-    caption = _caption(state)
     try:
         sent = await bot.send_widget(
             chat_id=message.chat.id,
             message_thread_id=message.message_thread_id,
             html=_widget_html(),
+            width=320,
             chat_data=_json(state),
             public_data=_json(public),
-            caption=caption,
             parse_mode=None,
             allow_queries=True,
-            protect_content=True,
         )
     except (TelegramBadRequest, TelegramNotFound) as error:
-        logger.warning('Telegram rejected subscription widget', error_type=type(error).__name__)
-        keyboard = None
-        if cabinet := public.get('cabinet'):
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Кабинет', url=cabinet)]])
-        await message.answer(caption, parse_mode=None, protect_content=True, reply_markup=keyboard)
+        reason = re.sub(r'\d{5,}', '[id]', error.message[:160])
+        logger.warning(
+            'Telegram rejected subscription widget',
+            error_type=type(error).__name__,
+            reason=reason if re.fullmatch(r'[A-Za-z0-9 :.,_()\[\]-]+', reason) else None,
+        )
+        await bot.send_message(
+            chat_id=message.chat.id,
+            message_thread_id=message.message_thread_id,
+            text=_card_text(state),
+            parse_mode=ParseMode.HTML,
+            protect_content=True,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            reply_markup=_card_keyboard(public),
+        )
         return
 
     await cache.set(_widget_key(bot.id, sent.chat.id, sent.message_id), db_user.id, expire=_WIDGET_LIFETIME)
+
+
+async def send_subscription_widget(message: Message, bot: Bot, db_user: User | None = None) -> None:
+    if db_user and _can_view(message, message.from_user, db_user):
+        await _send_widget(message, bot, db_user)
+
+
+async def open_subscription_widget(callback: CallbackQuery, bot: Bot, db_user: User | None = None) -> None:
+    message = callback.message
+    if not isinstance(message, Message) or not db_user or not _can_view(message, callback.from_user, db_user):
+        await callback.answer('Виджет доступен в личном чате с ботом.')
+        return
+
+    await callback.answer()
+    await _send_widget(message, bot, db_user)
+
+
+async def refresh_subscription_card(callback: CallbackQuery, bot: Bot, db_user: User | None = None) -> None:
+    message = callback.message
+    if (
+        not isinstance(message, Message)
+        or not message.from_user
+        or message.from_user.id != bot.id
+        or not db_user
+        or not _can_view(message, callback.from_user, db_user)
+    ):
+        await callback.answer('Откройте новый виджет из меню бота.')
+        return
+
+    state = _chat_data(db_user.subscription, now=datetime.now(UTC))
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            text=_card_text(state),
+            parse_mode=ParseMode.HTML,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            reply_markup=_card_keyboard(_public_data()),
+        )
+    except TelegramAPIError as error:
+        if not isinstance(error, TelegramBadRequest) or 'message is not modified' not in error.message.lower():
+            await callback.answer('Не удалось обновить. Откройте новый виджет из меню бота.')
+            return
+
+    await callback.answer('Данные обновлены.')
 
 
 async def _answer(bot: Bot, query: WidgetQuery, message: str) -> None:
@@ -217,7 +288,7 @@ async def refresh_subscription_widget(query: WidgetQuery, bot: Bot) -> None:
     try:
         async with asyncio.timeout(10):
             if (owner_id := await cache.get(key)) is None:
-                await _answer(bot, query, 'Откройте новый виджет командой /widget.')
+                await _answer(bot, query, 'Откройте новый виджет из меню бота.')
                 return
             if not await cache.setnx(f'{key}:refresh', True, expire=_REFRESH_INTERVAL):
                 await _answer(bot, query, 'Подождите несколько секунд и попробуйте снова.')
@@ -229,7 +300,7 @@ async def refresh_subscription_widget(query: WidgetQuery, bot: Bot) -> None:
             async with AsyncSessionLocal() as db:
                 user = await get_user_by_telegram_id(db, sender.id)
                 if not user or user.id != owner_id or user.status != UserStatus.ACTIVE.value:
-                    await _answer(bot, query, 'Обновление недоступно. Откройте виджет командой /widget.')
+                    await _answer(bot, query, 'Обновление недоступно. Откройте новый виджет из меню бота.')
                     return
                 state = _chat_data(user.subscription, now=datetime.now(UTC))
             await bot.edit_message_widget_data(chat_id=chat.id, message_id=message_id, chat_data=_json(state))
@@ -239,16 +310,11 @@ async def refresh_subscription_widget(query: WidgetQuery, bot: Bot) -> None:
         return
 
     await _answer(bot, query, 'Данные обновлены.')
-    try:
-        async with asyncio.timeout(4):
-            await cache.expire(key, _WIDGET_LIFETIME)
-            await bot.edit_message_caption(
-                chat_id=chat.id, message_id=message_id, caption=_caption(state), parse_mode=None
-            )
-    except (TimeoutError, TelegramAPIError):
-        logger.debug('Telegram did not update subscription widget caption')
+    await cache.expire(key, _WIDGET_LIFETIME)
 
 
 def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(send_subscription_widget, Command('widget'), F.chat.type == ChatType.PRIVATE)
+    dp.callback_query.register(open_subscription_widget, F.data == SUBSCRIPTION_WIDGET_CALLBACK)
+    dp.callback_query.register(refresh_subscription_card, F.data == _REFRESH_CARD_CALLBACK)
     dp.widget_query.register(refresh_subscription_widget)

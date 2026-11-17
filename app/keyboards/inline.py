@@ -10,7 +10,7 @@ from app.database.models import User
 from app.localization.loader import DEFAULT_LANGUAGE
 from app.localization.texts import get_texts
 from app.services.metered_traffic_policy import tariff_allows_traffic_topup
-from app.utils.miniapp_buttons import build_miniapp_or_callback_button
+from app.utils.miniapp_buttons import build_cabinet_url, build_miniapp_or_callback_button
 from app.utils.price_display import PriceInfo, format_price_button
 from app.utils.pricing_utils import (
     apply_percentage_discount,
@@ -23,6 +23,42 @@ from app.utils.subscription_utils import (
 
 
 logger = structlog.get_logger(__name__)
+
+SUBSCRIPTION_WIDGET_CALLBACK = 'open_subscription_widget'
+
+
+def get_subscription_widget_button(language: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text=get_texts(language).t('MENU_WIDGET', 'Виджет'),
+        callback_data=SUBSCRIPTION_WIDGET_CALLBACK,
+    )
+
+
+def _add_widget_to_main_menu(keyboard: InlineKeyboardMarkup, language: str) -> InlineKeyboardMarkup:
+    texts = get_texts(language)
+    rows = keyboard.inline_keyboard
+    cabinet_url = build_cabinet_url('/')
+    widget_row = [get_subscription_widget_button(language)]
+
+    cabinet_home = cabinet_url.partition('?')[0].rstrip('/')
+    for index, row in enumerate(rows):
+        for button in row:
+            url = button.web_app.url if button.web_app else button.url or ''
+            if button.callback_data == 'menu_profile_unavailable' or (
+                cabinet_home and url.partition('?')[0].rstrip('/') == cabinet_home
+            ):
+                rows.insert(index + 1, widget_row)
+                return keyboard
+
+    if cabinet_url:
+        rows.insert(
+            0,
+            [InlineKeyboardButton(text=texts.MENU_PROFILE, url=cabinet_url)],
+        )
+        rows.insert(1, widget_row)
+    else:
+        rows.insert(0, widget_row)
+    return keyboard
 
 
 async def get_main_menu_keyboard_async(
@@ -137,10 +173,11 @@ async def get_main_menu_keyboard_async(
             has_autopay=has_autopay,
         )
 
-        return await MenuLayoutService.build_keyboard(db, context)
+        keyboard = await MenuLayoutService.build_keyboard(db, context)
+        return _add_widget_to_main_menu(keyboard, language)
 
     # Fallback на синхронную версию
-    return get_main_menu_keyboard(
+    keyboard = get_main_menu_keyboard(
         language=language,
         is_admin=is_admin,
         has_had_paid_subscription=has_had_paid_subscription,
@@ -153,6 +190,7 @@ async def get_main_menu_keyboard_async(
         is_moderator=is_moderator,
         custom_buttons=custom_buttons,
     )
+    return _add_widget_to_main_menu(keyboard, language)
 
 
 _LANGUAGE_DISPLAY_NAMES = {

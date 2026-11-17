@@ -1,25 +1,26 @@
 <!doctype html>
 <html lang="ru">
 <head><style>
-body{margin:0;font:var(--tg-text-font-size,15px)/1.35 system-ui;color:var(--tg-theme-text-color)}
-main{padding:12px}
+body{margin:0;font:var(--tg-text-font-size,15px)/1.4 system-ui;color:var(--tg-theme-text-color)}
+main{padding:12px 14px 8px}
 header,.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
-header{margin-bottom:10px;font-size:.85em}
+header{margin-bottom:6px;font-size:.82em}
 h3,p{margin:0}h3{font-size:1.2em;line-height:1.25}
 .muted,footer{color:var(--tg-theme-hint-color)}
 #status{color:var(--tg-theme-accent-text-color)}
 #expiry{margin-top:4px;font-size:.9em}
-#traffic{margin-top:14px;padding-top:10px;border-top:1px solid var(--tg-theme-section-separator-color)}
-.row{font-size:.9em}.row strong{font-size:1.08em}
-.bar{height:5px;margin:8px 0;border-radius:3px;background:var(--tg-theme-secondary-bg-color);overflow:hidden}
+#traffic{margin-top:12px;padding-top:10px;border-top:1px solid var(--tg-theme-section-separator-color)}
+.row{font-size:.9em}.row strong{font-size:1.1em;font-variant-numeric:tabular-nums}
+.bar{height:4px;margin:6px 0 8px;border-radius:3px;background:var(--tg-theme-secondary-bg-color);overflow:hidden}
 .bar span{display:block;height:100%;background:var(--tg-theme-button-color)}
 #reset,#policy,#message{margin-top:7px;font-size:.82em}
 #standard{margin-top:10px;font-size:.9em}
 nav{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-button{flex:1 0 auto;min-height:38px;padding:8px 9px;border:0;border-radius:6px;font:inherit;font-size:.85em;color:var(--tg-theme-button-text-color);background:var(--tg-theme-button-color)}
+button{flex:1 0 auto;min-height:36px;padding:7px 9px;border:0;border-radius:6px;font:inherit;font-size:.87em;color:var(--tg-theme-link-color);background:var(--tg-theme-secondary-bg-color)}
+#connect{color:var(--tg-theme-button-text-color);background:var(--tg-theme-button-color)}
 button:active{opacity:var(--tg-button-pressed-opacity,.8)}
 button:disabled{opacity:var(--tg-button-disabled-opacity,.5)}
-footer{margin-top:8px;padding-bottom:max(8px,var(--tg-content-safe-area-inset-bottom,0px));font-size:.75em}
+footer{margin-top:7px;padding-bottom:max(7px,var(--tg-content-safe-area-inset-bottom,0px));font-size:.75em}
 </style></head>
 <body><main>
   <header><strong id="brand">Ultima</strong><span id="status"></span></header>
@@ -70,7 +71,7 @@ footer{margin-top:8px;padding-bottom:max(8px,var(--tg-content-safe-area-inset-bo
     byId('brand').textContent = links.brand || 'Ultima';
     byId('status').textContent = state ? state.status : '';
     byId('plan').textContent = state ? state.plan : 'Моя подписка';
-    byId('expiry').textContent = !state ? 'Откройте личный чат с ботом.' : state.expires ? 'Срок подписки: ' + state.expires : '';
+    byId('expiry').textContent = !state ? 'Откройте личный чат с ботом.' : state.expires ? 'Действует до ' + state.expires : '';
     byId('refresh').hidden = !state || !widget.viewer;
     byId('refresh').disabled = busy;
     byId('connect').hidden = !state || !state.active || !links.connection;
@@ -82,10 +83,10 @@ footer{margin-top:8px;padding-bottom:max(8px,var(--tg-content-safe-area-inset-bo
     var quota = Math.max(0, Number(state.quota) || 0);
     var remaining = Math.max(0, Number(state.remaining) || 0);
     byId('traffic-label').textContent = state.traffic;
-    byId('remaining').textContent = quota ? remaining + ' из ' + quota + ' ГБ' : 'Безлимитно';
+    byId('remaining').textContent = quota ? String(remaining).replace('.', ',') + ' из ' + quota + ' ГБ' : 'Безлимитно';
     byId('meter').hidden = !quota;
     byId('bar').style.width = (quota ? Math.min(100, remaining / quota * 100) : 0) + '%';
-    byId('reset').textContent = state.reset ? 'Обновление пакета: ' + state.reset : '';
+    byId('reset').textContent = state.reset ? 'Пакет обновится ' + state.reset : '';
     byId('standard').hidden = !state.special;
     byId('policy').textContent = state.special && state.active && (state.blocked || (quota && !remaining))
       ? 'Спецсерверы недоступны. Обычные серверы продолжают работать.' : '';
