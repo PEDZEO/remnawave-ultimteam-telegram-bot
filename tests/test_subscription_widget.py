@@ -120,7 +120,7 @@ async def test_refresh_updates_only_the_current_owner_snapshot(monkeypatch, stat
     monkeypatch.setattr(widget.cache, 'setnx', AsyncMock(return_value=True))
     monkeypatch.setattr(widget.cache, 'expire', AsyncMock(return_value=True))
     monkeypatch.setattr(widget.blacklist_service, 'is_user_blacklisted', AsyncMock(return_value=(False, None)))
-    monkeypatch.setattr(widget, 'AsyncSessionLocal', lambda: AsyncMock())
+    monkeypatch.setattr(widget, 'AsyncSessionLocal', AsyncMock)
     load_user = AsyncMock(return_value=_account(subscription))
     monkeypatch.setattr(widget, 'get_user_by_telegram_id', load_user)
     bot = SimpleNamespace(
