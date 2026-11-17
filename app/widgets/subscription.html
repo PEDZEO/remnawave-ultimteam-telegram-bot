@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+<head><style>
+body{margin:0;font:var(--tg-text-font-size,15px)/1.35 system-ui;color:var(--tg-theme-text-color)}
+main{padding:12px}
+header,.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+header{margin-bottom:10px;font-size:.85em}
+h3,p{margin:0}h3{font-size:1.2em;line-height:1.25}
+.muted,footer{color:var(--tg-theme-hint-color)}
+#status{color:var(--tg-theme-accent-text-color)}
+#expiry{margin-top:4px;font-size:.9em}
+#traffic{margin-top:14px;padding-top:10px;border-top:1px solid var(--tg-theme-section-separator-color)}
+.row{font-size:.9em}.row strong{font-size:1.08em}
+.bar{height:5px;margin:8px 0;border-radius:3px;background:var(--tg-theme-secondary-bg-color);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--tg-theme-button-color)}
+#reset,#policy,#message{margin-top:7px;font-size:.82em}
+#standard{margin-top:10px;font-size:.9em}
+nav{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+button{flex:1 0 auto;min-height:38px;padding:8px 9px;border:0;border-radius:6px;font:inherit;font-size:.85em;color:var(--tg-theme-button-text-color);background:var(--tg-theme-button-color)}
+button:active{opacity:var(--tg-button-pressed-opacity,.8)}
+button:disabled{opacity:var(--tg-button-disabled-opacity,.5)}
+footer{margin-top:8px;padding-bottom:max(8px,var(--tg-content-safe-area-inset-bottom,0px));font-size:.75em}
+</style></head>
+<body><main>
+  <header><strong id="brand">Ultima</strong><span id="status"></span></header>
+  <h3 id="plan">Моя подписка</h3>
+  <p id="expiry" class="muted">Откройте личный чат с ботом.</p>
+  <section id="traffic" hidden>
+    <div class="row"><span id="traffic-label"></span><strong id="remaining"></strong></div>
+    <div class="bar" id="meter" aria-hidden="true"><span id="bar"></span></div>
+    <p id="reset"></p>
+    <p id="standard">Обычные серверы: <strong>безлимитный трафик</strong></p>
+    <p id="policy" class="muted"></p>
+  </section>
+  <nav>
+    <button id="refresh" hidden>Обновить</button>
+    <button id="connect" hidden>Подключение</button>
+    <button id="cabinet" hidden>Кабинет</button>
+  </nav>
+  <p id="message" class="muted" role="status" hidden></p>
+  <footer id="asof"></footer>
+</main><script>
+(function () {
+  var widget = window.TelegramWidget;
+  var byId = function (id) { return document.getElementById(id); };
+  var busy = false;
+  var snapshot = null;
+  var links = {};
+
+  function parse(text) {
+    try { return JSON.parse(text); } catch (error) { return null; }
+  }
+
+  function isPrivate() {
+    return widget && !widget.isPreview && !widget.isForward && widget.chatType === 'private';
+  }
+
+  function note(text) {
+    byId('message').hidden = !text;
+    byId('message').textContent = text;
+  }
+
+  function draw() {
+    links = widget ? parse(widget.publicData) || {} : {};
+    var incoming = isPrivate() ? parse(widget.chatData) : null;
+    if (!incoming) snapshot = null;
+    else if (typeof incoming.rev === 'number' && (!snapshot || incoming.rev >= snapshot.rev)) snapshot = incoming;
+    var state = snapshot;
+
+    byId('brand').textContent = links.brand || 'Ultima';
+    byId('status').textContent = state ? state.status : '';
+    byId('plan').textContent = state ? state.plan : 'Моя подписка';
+    byId('expiry').textContent = !state ? 'Откройте личный чат с ботом.' : state.expires ? 'Срок подписки: ' + state.expires : '';
+    byId('refresh').hidden = !state || !widget.viewer;
+    byId('refresh').disabled = busy;
+    byId('connect').hidden = !state || !state.active || !links.connection;
+    byId('cabinet').hidden = !isPrivate() || !links.cabinet;
+    byId('asof').textContent = state ? 'По данным на ' + state.asof : '';
+    byId('traffic').hidden = !state || !state.traffic;
+    if (!state || !state.traffic) return;
+
+    var quota = Math.max(0, Number(state.quota) || 0);
+    var remaining = Math.max(0, Number(state.remaining) || 0);
+    byId('traffic-label').textContent = state.traffic;
+    byId('remaining').textContent = quota ? remaining + ' из ' + quota + ' ГБ' : 'Безлимитно';
+    byId('meter').hidden = !quota;
+    byId('bar').style.width = (quota ? Math.min(100, remaining / quota * 100) : 0) + '%';
+    byId('reset').textContent = state.reset ? 'Обновление пакета: ' + state.reset : '';
+    byId('standard').hidden = !state.special;
+    byId('policy').textContent = state.special && state.active && (state.blocked || (quota && !remaining))
+      ? 'Спецсерверы недоступны. Обычные серверы продолжают работать.' : '';
+  }
+
+  function refreshFinished(message) {
+    busy = false;
+    note(message);
+    draw();
+  }
+
+  byId('refresh').onclick = function () {
+    if (!isPrivate() || !widget.viewer || busy) return;
+    busy = true;
+    note('Обновляем…');
+    draw();
+    try {
+      widget.request('refresh:v1').then(function (answer) {
+        var result = parse(answer.result);
+        refreshFinished(result && result.message ? result.message : 'Запрос выполнен.');
+      }, function () { refreshFinished('Не удалось обновить. Попробуйте ещё раз.'); });
+    } catch (error) { refreshFinished('Не удалось обновить. Попробуйте ещё раз.'); }
+  };
+
+  function openLink(url) {
+    if (!isPrivate() || !url) return;
+    try { widget.openLink(url); } catch (error) { note('Не удалось открыть ссылку.'); }
+  }
+
+  byId('connect').onclick = function () { openLink(links.connection); };
+  byId('cabinet').onclick = function () { openLink(links.cabinet); };
+  if (widget) {
+    widget.onEvent('chatDataChanged', draw);
+    widget.onEvent('publicDataChanged', draw);
+  }
+  draw();
+  if (widget) widget.ready();
+})();
+</script></body></html>
