@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.28.0](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/compare/v3.27.0...v3.28.0) (2026-11-21)
+
+
+### New Features
+
+* **bot:** add private subscription widget ([d841d53](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/d841d53b913991ba1602ae0c6488c6cc4b6ac896))
+* provision VPN after Antarctic Wallet payments ([60c4735](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/60c47354622717f8296932fc27e9e9b1ccbe43ee))
+
+
+### Bug Fixes
+
+* **admin:** delete migrated user accounts ([3da7545](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/3da754572bd5533a5d40bea49324364bbebdd9f1))
+* **bot:** harden payments, websocket recovery and admin notifications ([b60ac16](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/b60ac166db4cc19e4ad6664376ef2349df6e07cb))
+* **bot:** open the subscription widget from the cabinet menu ([60651bb](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/60651bbec32519f09c135e6cf02bacb63f04985c))
+* **deps:** update audited production dependencies ([85de2f0](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/85de2f0ab5d0a36524083f2483e6f1ef5f2628a9))
+* **referral:** expose Telegram invite link ([c3751d4](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/c3751d425681608c200e29bb00c32f0437fa121d))
+* **traffic:** renew monthly squad quotas without accumulated debt ([6f9cb51](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/commit/6f9cb51cd4ada7a2d46f7776aebf3bf2e298a14c))
+
 ## [3.27.0](https://github.com/PEDZEO/remnawave-ultimteam-telegram-bot/compare/v3.26.2...v3.27.0) (2026-08-30)
 
 
