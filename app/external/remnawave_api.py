@@ -539,16 +539,18 @@ class RemnaWaveAPI:
         description: str | None = None,
         tag: str | None = None,
         active_internal_squads: list[str] | None = None,
+        *,
+        external_squad_uuid: str | None = None,
+        enforce_native_traffic_limit: bool = False,
     ) -> RemnaWaveUser:
         normalized_status = self._normalize_mutable_user_status(status)
+        metered = not enforce_native_traffic_limit and is_metered_traffic_enabled()
         data: dict[str, Any] = {
             'username': username,
             'status': (normalized_status or UserStatus.ACTIVE).value,
             'expireAt': expire_at.isoformat(),
-            'trafficLimitBytes': 0 if is_metered_traffic_enabled() else traffic_limit_bytes,
-            'trafficLimitStrategy': (
-                TrafficLimitStrategy.NO_RESET.value if is_metered_traffic_enabled() else traffic_limit_strategy.value
-            ),
+            'trafficLimitBytes': 0 if metered else traffic_limit_bytes,
+            'trafficLimitStrategy': (TrafficLimitStrategy.NO_RESET.value if metered else traffic_limit_strategy.value),
         }
 
         if telegram_id:
@@ -563,6 +565,8 @@ class RemnaWaveAPI:
             data['tag'] = tag
         if active_internal_squads:
             data['activeInternalSquads'] = active_internal_squads
+        if external_squad_uuid:
+            data['externalSquadUuid'] = external_squad_uuid
 
         logger.info(
             'POST /api/users payload',

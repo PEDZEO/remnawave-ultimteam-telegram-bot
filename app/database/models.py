@@ -2233,6 +2233,24 @@ class GuestPurchase(Base):
     tariff = relationship('Tariff', lazy='selectin')
 
 
+class AntarcticOrder(Base):
+    __tablename__ = 'antarctic_orders'
+    __table_args__ = (Index('ix_antarctic_orders_owner_created', 'owner', 'created_at'),)
+
+    id = Column(String(36), primary_key=True)
+    owner = Column(String(64), nullable=False)
+    amount = Column(String(24), nullable=False)
+    plan_name = Column(String(255), nullable=False)
+    days = Column(Integer, nullable=False)
+    device_limit = Column(Integer, nullable=False)
+    plan_config = Column(JSON, nullable=False)
+    operation_id = Column(String(36), unique=True, nullable=True)
+    status = Column(String(16), nullable=False)
+    created_at = Column(AwareDateTime(), nullable=False)
+    expires_at = Column(AwareDateTime(), nullable=True)
+    subscription_url = Column(Text, nullable=True)
+
+
 class Transaction(Base):
     __tablename__ = 'transactions'
     __table_args__ = (

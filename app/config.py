@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     CART_TTL_SECONDS: int = 3600  # Время жизни корзины пользователя в Redis (1 час)
 
     REMNAWAVE_API_URL: str | None = None
+    ANTARCTIC_APP_ID: str = ''
+    ANTARCTIC_APP_SECRET: str = ''
+    ANTARCTIC_API_BASE: str = ''
+    ANTARCTIC_WALLET_ORIGINS: str = ''
+    ANTARCTIC_TARIFF_ID: int | None = None
     REMNAWAVE_API_KEY: str | None = None
     REMNAWAVE_SECRET_KEY: str | None = None
 

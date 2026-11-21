@@ -40,6 +40,9 @@ from .admin_updates import router as admin_updates_router
 from .admin_users import router as admin_users_router
 from .admin_wheel import router as admin_wheel_router
 from .admin_withdrawals import router as admin_withdrawals_router
+
+# Main cabinet router
+from .antarctic import router as antarctic_router
 from .auth import router as auth_router
 from .balance import router as balance_router
 from .branding import router as branding_router
@@ -77,6 +80,7 @@ router.include_router(site_verification_router)
 router.include_router(guest_support_router)
 
 # Include all sub-routers
+router.include_router(antarctic_router)
 router.include_router(auth_router)
 router.include_router(account_linking_router)
 router.include_router(oauth_router)
